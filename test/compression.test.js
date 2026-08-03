@@ -7,7 +7,8 @@ import {
   outputFingerprint,
   compressOutput,
   compressInput,
-  maybeCompressInput
+  maybeCompressInput,
+  estimateTokens
 } from '../src/compression.js';
 
 function tmpdir() {
@@ -193,3 +194,38 @@ test('quiet log level skips cache safety check but keeps summary', async () => {
   assert.equal(logs.some((e) => e.event === 'cache_safety_check'), false, 'quiet mode should skip cache safety check');
 });
 
+test('estimateTokens approximates ASCII, CJK and mixed text', () => {
+  assert.equal(estimateTokens(''), 0);
+  assert.equal(estimateTokens('hello'), 2, '5 ASCII chars round to ceil(5/4) tokens');
+  assert.equal(estimateTokens('你好'), 2, 'each CJK char counts as one token');
+  assert.equal(estimateTokens('hello世界'), 4, 'CJK chars plus ceil of ASCII/4');
+  assert.equal(estimateTokens('A'.repeat(1000)), 250);
+});
+
+test('maybeCompressInput accumulates token totals and logs cumulative ratio', async () => {
+  let calls = 0;
+  const client = { compress: async () => { calls++; return { messages: [{ role: 'user', content: 'tiny' }], stats: {} }; } };
+  const logs = [];
+  const config = { compress: { enabled: true, backend: 'lean-ctx' }, logger: (e) => logs.push(e) };
+  const cache = new Map();
+  const safety = new Map();
+  const stats = { total_chars_before: 0, total_chars_after: 0, total_tokens_before: 0, total_tokens_after: 0, requests: 0 };
+  const big = { type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'A'.repeat(1000) };
+
+  await maybeCompressInput({ model: 'deepseek-v4-flash', input: [big] }, config, client, null, cache, safety, stats);
+  await maybeCompressInput({ model: 'deepseek-v4-flash', input: [big] }, config, client, null, cache, safety, stats);
+
+  const first = logs.find((e) => e.event === 'context_compression');
+  assert.ok(first.tokens_before > 0, 'request log should include estimated tokens_before');
+  assert.ok(first.tokens_after > 0, 'request log should include estimated tokens_after');
+  assert.equal(first.tokens_saved, first.tokens_before - first.tokens_after, 'request log should include tokens_saved');
+
+  const last = logs.filter((e) => e.event === 'context_compression').at(-1);
+  assert.ok(last.total_tokens_before > 0, 'cumulative total_tokens_before should accumulate');
+  assert.ok(last.total_tokens_after > 0, 'cumulative total_tokens_after should accumulate');
+  assert.equal(last.total_tokens_saved, last.total_tokens_before - last.total_tokens_after);
+  assert.ok(last.total_tokens_saved > 0, 'cumulative tokens saved should be positive');
+  assert.ok(last.total_saved_pct > 0, 'cumulative ratio should be positive');
+  assert.equal(stats.requests, 2, 'stats accumulator should count requests');
+  assert.equal(last.total_tokens_before, first.tokens_before * 2, 'cached reuse still counts forwarded size');
+});

@@ -28,6 +28,22 @@ export function outputToMessages(output) {
   return [{ role: 'user', content: text }];
 }
 
+/**
+ * 粗略 token 估算（用于统计，不参与任何缓存/计费逻辑）：
+ * - CJK 字符按 1 token/字；
+ * - 其余字符按 4 字符 ≈ 1 token（向上取整）。
+ */
+export function estimateTokens(text) {
+  const s = String(text ?? '');
+  let cjk = 0;
+  for (const ch of s) {
+    const code = ch.codePointAt(0);
+    if ((code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf)) cjk += 1;
+  }
+  const nonCjk = s.length - cjk;
+  return cjk + Math.ceil(nonCjk / 4);
+}
+
 export async function compressOutput({ output, model, client }) {
   const messages = outputToMessages(output);
   const result = await client.compress(messages, model);
@@ -53,6 +69,9 @@ export async function compressInput(input, ctx) {
     overall: {
       chars_before: 0,
       chars_after: 0,
+      tokens_before: 0,
+      tokens_after: 0,
+      tokens_saved: 0,
       outputs_total: 0,
       outputs_cached: 0,
       outputs_compressed: 0,
@@ -67,6 +86,7 @@ export async function compressInput(input, ctx) {
     }
     const fingerprint = outputFingerprint(item);
     const charsBefore = JSON.stringify(item).length;
+    const tokensBefore = estimateTokens(JSON.stringify(item));
     let text = ctx.cache.get(fingerprint);
     let cached = true;
     if (text === undefined) {
@@ -82,13 +102,16 @@ export async function compressInput(input, ctx) {
     const archiveFile = storeOutput(item, ctx.storeDir);
     const marker = archiveFile ? ` [[ctx:${fingerprint}|${archiveFile}]]` : '';
     const charsAfter = text.length;
+    const tokensAfter = estimateTokens(text);
     const savedPct = charsBefore > 0 ? Math.round((1 - charsAfter / charsBefore) * 100) : 0;
     meta.overall.chars_before += charsBefore;
     meta.overall.chars_after += charsAfter;
+    meta.overall.tokens_before += tokensBefore;
+    meta.overall.tokens_after += tokensAfter;
     if (cached) meta.overall.outputs_cached += 1;
     else meta.overall.outputs_compressed += 1;
     const textHash = createHash('sha256').update(text).digest('hex');
-    meta.outputs.push({ fingerprint, cached, textHash, savedPct, charsBefore, charsAfter });
+    meta.outputs.push({ fingerprint, cached, textHash, savedPct, charsBefore, charsAfter, tokensBefore, tokensAfter });
     if (!cached) {
       ctx.log?.({
         event: 'context_compression',
@@ -97,28 +120,47 @@ export async function compressInput(input, ctx) {
         cached,
         chars_before: charsBefore,
         chars_after: charsAfter,
+        tokens_before: tokensBefore,
+        tokens_after: tokensAfter,
+        tokens_saved: tokensBefore - tokensAfter,
         saved_pct: savedPct
       });
     }
     out.push({ ...item, output: `${text}${marker}` });
   }
   meta.overall.outputs_total = meta.outputs.length;
+  meta.overall.tokens_saved = meta.overall.tokens_before - meta.overall.tokens_after;
   meta.overall.saved_pct = meta.overall.chars_before > 0
     ? Math.round((1 - meta.overall.chars_after / meta.overall.chars_before) * 100)
     : 0;
   return out;
 }
 
-export async function maybeCompressInput(body, config, client, storeDir, cache, safetyMap) {
+export async function maybeCompressInput(body, config, client, storeDir, cache, safetyMap, stats) {
   if (!config?.compress?.enabled || config.compress.backend !== 'lean-ctx') return body;
   try {
     const ctx = { client, model: body.model, storeDir, cache, log: (e) => logEvent(config, e) };
     const input = await compressInput(body.input, ctx);
     const meta = ctx.meta;
+    if (stats) {
+      stats.total_chars_before += meta.overall.chars_before;
+      stats.total_chars_after += meta.overall.chars_after;
+      stats.total_tokens_before += meta.overall.tokens_before;
+      stats.total_tokens_after += meta.overall.tokens_after;
+      stats.requests += 1;
+    }
     logEvent(config, {
       event: 'context_compression',
       model: body.model,
       ...meta.overall,
+      total_chars_before: stats?.total_chars_before ?? 0,
+      total_chars_after: stats?.total_chars_after ?? 0,
+      total_tokens_before: stats?.total_tokens_before ?? 0,
+      total_tokens_after: stats?.total_tokens_after ?? 0,
+      total_tokens_saved: stats ? stats.total_tokens_before - stats.total_tokens_after : 0,
+      total_saved_pct: stats && stats.total_tokens_before > 0
+        ? Math.round((1 - stats.total_tokens_after / stats.total_tokens_before) * 100)
+        : 0,
       reason: 'ok'
     });
     if (safetyMap) {
