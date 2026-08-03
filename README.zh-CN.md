@@ -109,7 +109,7 @@ Get-Content -Raw "<绝对路径>"
 cat "<绝对路径>"
 ```
 
-- 日志：`context_compression` 事件记录每个输出的压缩率（`saved_pct`、`chars_before`、`chars_after`）与整体统计；daemon 不可用时自动降级为不压缩，不影响路由功能。
+- 日志：`context_compression` 汇总事件记录整体压缩率；缓存命中不再逐条打日志。`compress.logLevel` 可设 `"verbose"`（默认，含 `cache_safety_check`）或 `"quiet"`（只保留汇总与错误日志）；daemon 不可用时自动降级为不压缩，不影响路由功能。
 
 
 ## 启动

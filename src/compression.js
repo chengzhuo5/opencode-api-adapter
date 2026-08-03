@@ -89,15 +89,17 @@ export async function compressInput(input, ctx) {
     else meta.overall.outputs_compressed += 1;
     const textHash = createHash('sha256').update(text).digest('hex');
     meta.outputs.push({ fingerprint, cached, textHash, savedPct, charsBefore, charsAfter });
-    ctx.log?.({
-      event: 'context_compression',
-      model: ctx.model,
-      call_id: item.call_id,
-      cached,
-      chars_before: charsBefore,
-      chars_after: charsAfter,
-      saved_pct: savedPct
-    });
+    if (!cached) {
+      ctx.log?.({
+        event: 'context_compression',
+        model: ctx.model,
+        call_id: item.call_id,
+        cached,
+        chars_before: charsBefore,
+        chars_after: charsAfter,
+        saved_pct: savedPct
+      });
+    }
     out.push({ ...item, output: `${text}${marker}` });
   }
   meta.overall.outputs_total = meta.outputs.length;
@@ -136,13 +138,15 @@ export async function maybeCompressInput(body, config, client, storeDir, cache, 
         }
       }
       safetyMap.set(body.model, { hashes: current.map((t) => t.textHash), fingerprints: current.map((t) => t.fingerprint) });
-      logEvent(config, {
-        event: 'cache_safety_check',
-        model: body.model,
-        ok,
-        comparable,
-        ...(ok ? {} : { reason: 'prefix_drift' })
-      });
+      if (config.compress.logLevel !== 'quiet') {
+        logEvent(config, {
+          event: 'cache_safety_check',
+          model: body.model,
+          ok,
+          comparable,
+          ...(ok ? {} : { reason: 'prefix_drift' })
+        });
+      }
     }
     return { ...body, input };
   } catch {

@@ -171,3 +171,25 @@ test('cache safety check does not report prefix drift across different sessions'
   assert.equal(checks[1].reason, undefined);
 });
 
+test('compressInput skips per-output logs when output is cached', async () => {
+  const logs = [];
+  const client = { compress: async () => ({ messages: [{ role: 'user', content: 'tiny' }], stats: {} }) };
+  const ctx = { client, model: 'x', storeDir: null, cache: new Map(), log: (e) => logs.push(e) };
+  const output1 = { type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'same' };
+  await compressInput([output1], ctx);
+  await compressInput([output1], ctx);
+  const perOutput = logs.filter((e) => e.event === 'context_compression' && e.call_id);
+  assert.equal(perOutput.length, 1, 'cached outputs should not emit per-output logs');
+});
+
+test('quiet log level skips cache safety check but keeps summary', async () => {
+  const logs = [];
+  const client = { compress: async () => ({ messages: [{ role: 'user', content: 'tiny' }], stats: {} }) };
+  const config = { compress: { enabled: true, backend: 'lean-ctx', logLevel: 'quiet' }, logger: (e) => logs.push(e) };
+  const cache = new Map();
+  const safety = new Map();
+  await maybeCompressInput({ model: 'deepseek-v4-flash', input: [{ type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'x' }] }, config, client, null, cache, safety);
+  assert.ok(logs.some((e) => e.event === 'context_compression' && e.reason === 'ok'), 'summary should still be logged');
+  assert.equal(logs.some((e) => e.event === 'cache_safety_check'), false, 'quiet mode should skip cache safety check');
+});
+

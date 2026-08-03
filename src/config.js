@@ -16,7 +16,8 @@ export const DEFAULT_CONFIG = {
     token: '',
     storeDir: 'ctx-store',
     cacheSize: 1000,
-    timeoutMs: 30000
+    timeoutMs: 30000,
+    logLevel: 'verbose'
   }
 };
 

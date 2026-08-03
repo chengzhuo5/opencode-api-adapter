@@ -109,7 +109,7 @@ Get-Content -Raw "<absolute path>"
 cat "<absolute path>"
 ```
 
-- Logs: `context_compression` records per-output `saved_pct`, `chars_before`, `chars_after` plus overall stats; when the daemon is unavailable, compression degrades gracefully and routing keeps working.
+- Logs: the `context_compression` summary records overall rates; cached outputs no longer emit per-output logs. Set `compress.logLevel` to `"verbose"` (default, includes `cache_safety_check`) or `"quiet"` (summary and errors only); when the daemon is unavailable, compression degrades gracefully and routing keeps working.
 
 
 ## Starting the adapter
