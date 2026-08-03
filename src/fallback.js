@@ -44,8 +44,6 @@ export function maybeUpgradeModel(body) {
 
 
 export async function forwardWithFallback(res, body, route, config, fetchImpl, displayModel = body.model) {
-  const headers = { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
-  const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
   if (unsupportedResponses.has(body.model)) {
     if (!unsupportedNotified.has(body.model)) {
       unsupportedNotified.add(body.model);
@@ -60,37 +58,53 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
     await forwardChat(res, body, config, fetchImpl, displayModel);
     return;
   }
+  const providers = [
+    { endpoint: route.endpoint, apiKey: route.apiKey ?? config.apiKey },
+    ...(route.fallbackEndpoint ? [{ endpoint: route.fallbackEndpoint, apiKey: route.fallbackApiKey ?? config.apiKey }] : [])
+  ];
   const requestBody = normalizeResponsesRequest(body);
-  let upstream;
-  try {
-    upstream = await fetchImpl(route.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
-  } catch {
+  const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
+  for (let i = 0; i < providers.length; i++) {
+    const provider = providers[i];
+    const headers = { 'content-type': 'application/json', authorization: `Bearer ${provider.apiKey}` };
+    const lastProvider = i === providers.length - 1;
+    let upstream;
+    try {
+      upstream = await fetchImpl(provider.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
+    } catch {
+      logEvent(config, {
+        event: 'api_fallback',
+        model: displayModel,
+        reason: 'network_error',
+        primary_endpoint: endpointName(provider.endpoint),
+        fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
+      });
+      if (lastProvider) {
+        await forwardChat(res, body, config, fetchImpl, displayModel);
+        return;
+      }
+      continue;
+    }
+    if (upstream.ok) {
+      await relayUpstream(res, upstream);
+      return;
+    }
+    if (lastProvider && UNSUPPORTED_STATUSES.has(upstream.status)) {
+      unsupportedResponses.add(body.model);
+    }
     logEvent(config, {
       event: 'api_fallback',
       model: displayModel,
-      reason: 'network_error',
-      primary_endpoint: endpointName(route.endpoint),
-      fallback_endpoint: 'chat/completions'
+      reason: 'http_error',
+      primary_endpoint: endpointName(provider.endpoint),
+      primary_status: upstream.status,
+      fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
     });
-    await forwardChat(res, body, config, fetchImpl, displayModel);
-    return;
+    if (lastProvider) {
+      await forwardChat(res, body, config, fetchImpl, displayModel);
+      return;
+    }
   }
-  if (upstream.ok) {
-    await relayUpstream(res, upstream);
-    return;
-  }
-  if (UNSUPPORTED_STATUSES.has(upstream.status)) {
-    unsupportedResponses.add(body.model);
-  }
-  logEvent(config, {
-    event: 'api_fallback',
-    model: displayModel,
-    reason: 'http_error',
-    primary_endpoint: endpointName(route.endpoint),
-    primary_status: upstream.status,
-    fallback_endpoint: 'chat/completions'
-  });
-  await forwardChat(res, body, config, fetchImpl, displayModel);
 }
 
 async function forwardChat(res, body, config, fetchImpl, displayModel) {

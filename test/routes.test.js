@@ -32,6 +32,27 @@ test('throws for unknown model', () => {
   assert.throws(() => resolveRoute(config, 'nope'), UnknownModelError);
 });
 
+test('routes model with custom endpoint to provider and keeps opencode fallback', () => {
+  const cfg = {
+    apiBaseUrl: 'https://opencode.ai/zen/go/v1',
+    apiKey: 'opencode-key',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  };
+  const route = resolveRoute(cfg, 'gpt-5.6-luna');
+  assert.equal(route.upstream, 'responses');
+  assert.equal(route.endpoint, 'https://ergouapi.com/v1/responses');
+  assert.equal(route.apiKey, 'ergou-key');
+  assert.equal(route.fallbackEndpoint, 'https://opencode.ai/zen/go/v1/responses');
+  assert.equal(route.fallbackApiKey, 'opencode-key');
+});
+
+test('route without custom endpoint has no provider fallback', () => {
+  const route = resolveRoute({ ...config, apiKey: 'k' }, 'gpt-5.6-luna');
+  assert.equal(route.fallbackEndpoint, null);
+  assert.equal(route.fallbackApiKey, null);
+  assert.equal(route.apiKey, 'k');
+});
+
 test('lists routed models', () => {
   assert.ok(listRoutedModels(config).includes('gpt-5.6-luna'));
   assert.ok(listRoutedModels(config).includes('qwen3.6-plus'));

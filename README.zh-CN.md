@@ -67,6 +67,26 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 }
 ```
 
+### 自定义服务商（模型级端点）
+
+默认所有模型都路由到 `apiBaseUrl`（OpenCode Go）。任何模型都可以覆盖为其他服务商，且该服务商**优先级高于 OpenCode**——失败时自动降级到 OpenCode，再降级到 chat/completions：
+
+```json
+{
+  "models": {
+    "gpt-5.6-luna": {
+      "upstream": "responses",
+      "endpoint": "https://ergouapi.com/v1",
+      "apiKeyEnv": "ERGOUAPI_API_KEY"
+    }
+  }
+}
+```
+
+- `endpoint`：自定义服务商的 base URL（路由会自动拼接 `/responses` 或 `/messages`）
+- `apiKeyEnv`：该服务商 API key 对应的环境变量名；不设置则复用全局 `apiKeyEnv`
+- 优先级：自定义服务商 → `apiBaseUrl`（OpenCode）→ 协议降级（chat/completions）
+
 也可以通过环境变量或命令行指定配置：
 
 ```powershell

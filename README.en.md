@@ -67,6 +67,26 @@ Minimal configuration:
 }
 ```
 
+### Custom providers (per-model endpoints)
+
+By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be overridden to another provider, and that provider has **higher priority than OpenCode** — on failure the router falls back to OpenCode, then to chat/completions:
+
+```json
+{
+  "models": {
+    "gpt-5.6-luna": {
+      "upstream": "responses",
+      "endpoint": "https://ergouapi.com/v1",
+      "apiKeyEnv": "ERGOUAPI_API_KEY"
+    }
+  }
+}
+```
+
+- `endpoint`: base URL of the custom provider (the router appends `/responses` or `/messages`)
+- `apiKeyEnv`: environment variable holding the provider API key; falls back to the global `apiKeyEnv` when omitted
+- Priority: custom provider → `apiBaseUrl` (OpenCode) → protocol fallback (chat/completions)
+
 You can select a configuration file with an environment variable or CLI option:
 
 ```powershell

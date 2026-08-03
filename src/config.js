@@ -34,5 +34,13 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
   };
   const apiKey = env[config.apiKeyEnv];
   if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);
-  return { ...config, apiKey };
+  const models = {};
+  for (const [id, entry] of Object.entries(config.models || {})) {
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      models[id] = { ...entry, apiKey: entry.apiKeyEnv ? env[entry.apiKeyEnv] : apiKey };
+    } else {
+      models[id] = entry;
+    }
+  }
+  return { ...config, apiKey, models };
 }

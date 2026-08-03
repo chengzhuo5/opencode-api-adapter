@@ -323,3 +323,54 @@ test('compression is applied before forwarding and falls back when daemon is dow
   assert.equal(calls[0].body.input[0].role, 'user');
 });
 
+test('provider fallback tries custom endpoint first, then opencode responses', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, auth: init.headers.authorization });
+    if (url === 'https://ergouapi.com/v1/responses') {
+      return new Response(JSON.stringify({ error: { message: 'bad model' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    if (url === 'https://x/v1/responses') {
+      return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`unexpected url: ${url}`);
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] }) });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, 'https://ergouapi.com/v1/responses');
+  assert.equal(calls[0].auth, 'Bearer ergou-key');
+  assert.equal(calls[1].url, 'https://x/v1/responses');
+  assert.equal(calls[1].auth, 'Bearer k');
+});
+
+test('provider fallback goes to chat when both providers fail', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, auth: init.headers.authorization });
+    if (url.endsWith('/chat/completions')) {
+      return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'gpt-5.6-luna', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ error: { message: 'down' } }), { status: 500, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] }) });
+    const data = await res.json();
+    assert.equal(data.object, 'response');
+  });
+  assert.deepEqual(calls.map((c) => c.url), [
+    'https://ergouapi.com/v1/responses',
+    'https://x/v1/responses',
+    'https://x/v1/chat/completions'
+  ]);
+});

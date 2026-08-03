@@ -36,3 +36,12 @@ test('loads compress defaults and merges overrides', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('resolves per-model api key from its own env var', () => {
+  const { dir, file } = makeConfig({
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKeyEnv: 'ERGOUAPI_API_KEY' } }
+  });
+  const cfg = loadConfig({ configPath: file, env: { OPENCODE_GO_API_KEY: 'opencode-key', ERGOUAPI_API_KEY: 'ergou-key' } });
+  assert.equal(cfg.models['gpt-5.6-luna'].apiKey, 'ergou-key');
+  assert.equal(cfg.models['gpt-5.6-luna'].endpoint, 'https://ergouapi.com/v1');
+  rmSync(dir, { recursive: true, force: true });
+});

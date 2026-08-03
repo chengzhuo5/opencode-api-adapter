@@ -28,11 +28,21 @@ export class UnknownModelError extends Error {
 }
 
 export function resolveRoute(config, model) {
-  const upstream = config.models?.[model]?.upstream ?? DEFAULT_MODEL_ROUTES[model];
+  const entry = config.models?.[model];
+  const upstream = entry?.upstream ?? DEFAULT_MODEL_ROUTES[model];
   if (!upstream) throw new UnknownModelError(model);
   const effective = upstream === 'messages' ? 'messages' : 'responses';
   const suffix = effective === 'messages' ? 'messages' : 'responses';
-  return { model, upstream: effective, endpoint: `${config.apiBaseUrl}/${suffix}` };
+  const baseUrl = entry?.endpoint ?? config.apiBaseUrl;
+  const hasCustomProvider = Boolean(entry?.endpoint);
+  return {
+    model,
+    upstream: effective,
+    endpoint: `${baseUrl}/${suffix}`,
+    apiKey: entry?.apiKey ?? config.apiKey,
+    fallbackEndpoint: hasCustomProvider ? `${config.apiBaseUrl}/${suffix}` : null,
+    fallbackApiKey: hasCustomProvider ? config.apiKey : null
+  };
 }
 
 export function listRoutedModels(config) {
