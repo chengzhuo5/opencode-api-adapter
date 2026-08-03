@@ -78,7 +78,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 ## 上下文压缩（lean-ctx）
 
-路由支持按“对话轮次”做确定性增量压缩，后端为本地 [lean-ctx](https://github.com/yvgude/lean-ctx) daemon，保持 DeepSeek 前缀缓存命中并提供原文可逆取回。
+路由只对历史中的 `function_call_output`（工具输出）做确定性压缩，消息结构与用户/助手指令保持原样，避免语义丢失。后端为本地 [lean-ctx](https://github.com/yvgude/lean-ctx) daemon。
 
 - 安装 daemon：`npm i -g lean-ctx-bin` 后运行 `lean-ctx proxy enable`（或按官方脚本安装）。
 - 配置：
@@ -97,9 +97,20 @@ opencode-api-adapter --config "C:\path\to\config.json"
 }
 ```
 
-- 原理：每个历史轮次独立压缩且结果只取决于该轮原文；新请求只压缩新增轮次，旧轮次字节不变，DeepSeek 前缀缓存可命中。
-- CCR：原文按 SHA-256 存入 `storeDir`，压缩文本保留 `[[ctx:<hash>|<path>]]` 标记，Codex 可用 shell 读取原文。
-- daemon 不可用时自动降级为不压缩，不影响路由功能。
+- 压缩粒度：每个 `function_call_output` 独立压缩（无论大小）；其余 input 项原样透传。
+- 缓存安全：同一输出指纹对应同一压缩结果，历史前缀字节稳定，DeepSeek 前缀缓存可命中；每次请求输出 `cache_safety_check` 校验前缀漂移。
+- CCR 显式取回：被压缩项的输出格式为 `<压缩文本> [[ctx:<sha256>|<绝对路径>]]`，其中 `<绝对路径>` 是原文 JSON 存档（SHA-256 内容寻址，位于 `storeDir`）。需要完整原文时，用 shell 读取该文件即可：
+
+```powershell
+Get-Content -Raw "<绝对路径>"
+```
+
+```bash
+cat "<绝对路径>"
+```
+
+- 日志：`context_compression` 事件记录每个输出的压缩率（`saved_pct`、`chars_before`、`chars_after`）与整体统计；daemon 不可用时自动降级为不压缩，不影响路由功能。
+
 
 ## 启动
 

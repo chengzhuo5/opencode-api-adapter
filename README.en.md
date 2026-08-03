@@ -78,7 +78,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 ## Context compression (lean-ctx)
 
-The router compresses conversation history per turn deterministically, using a local [lean-ctx](https://github.com/yvgude/lean-ctx) daemon, while keeping DeepSeek prefix cache hits and offering reversible retrieval (CCR).
+The router compresses only `function_call_output` (tool outputs) in history, keeping the message structure and user/assistant instructions intact to avoid semantic loss. The backend is a local [lean-ctx](https://github.com/yvgude/lean-ctx) daemon.
 
 - Install the daemon: `npm i -g lean-ctx-bin` then run `lean-ctx proxy enable` (or use the official installer).
 - Configure:
@@ -97,9 +97,20 @@ The router compresses conversation history per turn deterministically, using a l
 }
 ```
 
-- Each historical turn is compressed independently; new requests only compress new turns, so old compressed turns stay byte-stable and DeepSeek prefix cache hits are preserved.
-- CCR: originals are stored by SHA-256 in `storeDir`; compressed text keeps `[[ctx:<hash>|<path>]]` markers so Codex can read originals via shell.
-- When the daemon is unavailable, compression degrades gracefully and routing keeps working.
+- Granularity: every `function_call_output` is compressed independently (regardless of size); all other input items pass through verbatim.
+- Cache safety: the same output fingerprint always yields the same compressed text, so the historical prefix stays byte-stable and DeepSeek prefix cache hits are preserved; each request emits a `cache_safety_check` for prefix drift.
+- Explicit CCR retrieval: a compressed item becomes `<compressed text> [[ctx:<sha256>|<absolute path>]]`, where `<absolute path>` points to the original JSON archive (SHA-256 addressed, under `storeDir`). To retrieve the full original, read that file with the shell:
+
+```powershell
+Get-Content -Raw "<absolute path>"
+```
+
+```bash
+cat "<absolute path>"
+```
+
+- Logs: `context_compression` records per-output `saved_pct`, `chars_before`, `chars_after` plus overall stats; when the daemon is unavailable, compression degrades gracefully and routing keeps working.
+
 
 ## Starting the adapter
 
