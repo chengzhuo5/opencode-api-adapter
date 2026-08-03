@@ -374,3 +374,31 @@ test('provider fallback goes to chat when both providers fail', async () => {
     'https://x/v1/chat/completions'
   ]);
 });
+
+test('deepseek image request routes upgraded luna through its custom provider', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(url);
+    if (url === 'https://ergouapi.com/v1/responses') {
+      return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error(`unexpected url: ${url}`);
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: false,
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what is this' }, { type: 'input_image', image_url: 'https://x/1.png' }] }]
+      })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.deepEqual(calls, ['https://ergouapi.com/v1/responses'], 'upgraded luna must use its custom provider endpoint');
+});

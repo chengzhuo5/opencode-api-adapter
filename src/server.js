@@ -43,7 +43,7 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const body = await readJson(req);
-        const route = resolveRoute(config, body.model);
+        const route = resolveRoute(config, maybeUpgradeModel(body).model);
         await forward(res, body, route, config, fetchImpl, { client: ctxClient, storeDir: ctxStoreDir, cache: ctxCache, safety: ctxSafety, stats: ctxStats });
         return;
       }
