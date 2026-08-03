@@ -25,3 +25,14 @@ test('throws when api key env is missing', () => {
   assert.throws(() => loadConfig({ configPath: file, env: {} }), /missing OPENCODE_GO_API_KEY/);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('loads compress defaults and merges overrides', () => {
+  const { dir, file } = makeConfig({ compress: { baseUrl: 'http://127.0.0.1:4444' } });
+  const cfg = loadConfig({ configPath: file, env: { OPENCODE_GO_API_KEY: 'k' } });
+  assert.equal(cfg.compress.backend, 'lean-ctx');
+  assert.equal(cfg.compress.enabled, true);
+  assert.equal(cfg.compress.baseUrl, 'http://127.0.0.1:4444');
+  assert.equal(cfg.compress.storeDir, 'ctx-store');
+  rmSync(dir, { recursive: true, force: true });
+});
+

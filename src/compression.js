@@ -1,3 +1,4 @@
+import { logEvent } from './logger.js';
 import { createHash } from 'node:crypto';
 
 export function splitTurns(input) {
@@ -110,5 +111,17 @@ export async function compressInput(input, ctx) {
     });
   }
   return compressed;
+}
+
+export async function maybeCompressInput(body, config, client, storeDir, cache) {
+  if (!config?.compress?.enabled || config.compress.backend !== 'lean-ctx') return body;
+  try {
+    const ctx = { client, model: body.model, storeDir, cache, log: (e) => logEvent(config, e) };
+    const input = await compressInput(body.input, ctx);
+    return { ...body, input };
+  } catch {
+    logEvent(config, { event: 'context_compression', model: body.model, reason: 'backend_unavailable' });
+    return body;
+  }
 }
 

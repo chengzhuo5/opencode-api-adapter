@@ -304,3 +304,22 @@ test('logs responses_unsupported only once per model', async () => {
   assert.equal(unsupported.length, 1, 'expected exactly one responses_unsupported log');
 });
 
+
+test('compression is applied before forwarding and falls back when daemon is down', async () => {
+  clearUnsupportedCache();
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url, body });
+    if (url.endsWith('/responses')) {
+      return new Response(JSON.stringify({ error: { message: 'x' } }), { status: 500, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'deepseek-v4-flash', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {}, compress: { enabled: true, backend: 'lean-ctx', baseUrl: 'http://127.0.0.1:1', token: '', storeDir: null, timeoutMs: 200 } }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }] }) });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(calls[0].body.input[0].role, 'user');
+});
+

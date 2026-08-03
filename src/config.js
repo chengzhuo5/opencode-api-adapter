@@ -8,7 +8,16 @@ export const DEFAULT_CONFIG = {
   apiKeyEnv: 'OPENCODE_GO_API_KEY',
   catalogFile: 'catalog.json',
   timeouts: { requestMs: 600000, streamIdleMs: 180000 },
-  models: {}
+  models: {},
+  compress: {
+    enabled: true,
+    backend: 'lean-ctx',
+    baseUrl: undefined,
+    token: '',
+    storeDir: 'ctx-store',
+    cacheSize: 1000,
+    timeoutMs: 30000
+  }
 };
 
 export function loadConfig({ configPath = 'config.json', env = process.env, cwd = process.cwd() } = {}) {
@@ -19,7 +28,8 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     ...DEFAULT_CONFIG,
     ...raw,
     timeouts: { ...DEFAULT_CONFIG.timeouts, ...(raw.timeouts || {}) },
-    models: raw.models || {}
+    models: raw.models || {},
+    compress: { ...DEFAULT_CONFIG.compress, ...(raw.compress || {}) }
   };
   const apiKey = env[config.apiKeyEnv];
   if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);
