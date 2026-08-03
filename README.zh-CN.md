@@ -76,6 +76,31 @@ opencode-api-adapter
 opencode-api-adapter --config "C:\path\to\config.json"
 ```
 
+## 上下文压缩（lean-ctx）
+
+路由支持按“对话轮次”做确定性增量压缩，后端为本地 [lean-ctx](https://github.com/yvgude/lean-ctx) daemon，保持 DeepSeek 前缀缓存命中并提供原文可逆取回。
+
+- 安装 daemon：`npm i -g lean-ctx-bin` 后运行 `lean-ctx proxy enable`（或按官方脚本安装）。
+- 配置：
+
+```json
+{
+  "compress": {
+    "enabled": true,
+    "backend": "lean-ctx",
+    "baseUrl": "http://127.0.0.1:4444",
+    "token": "",
+    "storeDir": "ctx-store",
+    "cacheSize": 1000,
+    "timeoutMs": 30000
+  }
+}
+```
+
+- 原理：每个历史轮次独立压缩且结果只取决于该轮原文；新请求只压缩新增轮次，旧轮次字节不变，DeepSeek 前缀缓存可命中。
+- CCR：原文按 SHA-256 存入 `storeDir`，压缩文本保留 `[[ctx:<hash>|<path>]]` 标记，Codex 可用 shell 读取原文。
+- daemon 不可用时自动降级为不压缩，不影响路由功能。
+
 ## 启动
 
 ```powershell

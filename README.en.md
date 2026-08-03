@@ -76,6 +76,31 @@ opencode-api-adapter
 opencode-api-adapter --config "C:\path\to\config.json"
 ```
 
+## Context compression (lean-ctx)
+
+The router compresses conversation history per turn deterministically, using a local [lean-ctx](https://github.com/yvgude/lean-ctx) daemon, while keeping DeepSeek prefix cache hits and offering reversible retrieval (CCR).
+
+- Install the daemon: `npm i -g lean-ctx-bin` then run `lean-ctx proxy enable` (or use the official installer).
+- Configure:
+
+```json
+{
+  "compress": {
+    "enabled": true,
+    "backend": "lean-ctx",
+    "baseUrl": "http://127.0.0.1:4444",
+    "token": "",
+    "storeDir": "ctx-store",
+    "cacheSize": 1000,
+    "timeoutMs": 30000
+  }
+}
+```
+
+- Each historical turn is compressed independently; new requests only compress new turns, so old compressed turns stay byte-stable and DeepSeek prefix cache hits are preserved.
+- CCR: originals are stored by SHA-256 in `storeDir`; compressed text keeps `[[ctx:<hash>|<path>]]` markers so Codex can read originals via shell.
+- When the daemon is unavailable, compression degrades gracefully and routing keeps working.
+
 ## Starting the adapter
 
 ```powershell
