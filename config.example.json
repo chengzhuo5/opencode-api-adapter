@@ -1,0 +1,12 @@
+{
+  "host": "127.0.0.1",
+  "port": 15721,
+  "apiBaseUrl": "https://opencode.ai/zen/go/v1",
+  "apiKeyEnv": "OPENCODE_GO_API_KEY",
+  "catalogFile": "catalog.json",
+  "timeouts": {
+    "requestMs": 600000,
+    "streamIdleMs": 180000
+  },
+  "models": {}
+}

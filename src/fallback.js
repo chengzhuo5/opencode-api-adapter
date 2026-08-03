@@ -1,0 +1,154 @@
+import { responsesToChatRequest } from './translate/responsesToChat.js';
+import { chatToResponsesObject, translateChatStreamToResponses } from './translate/chatToResponses.js';
+import { normalizeResponsesRequest } from './translate/responsesContext.js';
+import { sseEncode } from './sse.js';
+import { logEvent } from './logger.js';
+
+const DEEPSEEK_MODELS = new Set(['deepseek-v4-pro', 'deepseek-v4-flash']);
+const MULTIMODAL_FALLBACK_MODEL = 'gpt-5.6-luna';
+
+export function hasImageInput(body) {
+  const input = body?.input;
+  if (!Array.isArray(input)) return false;
+  return input.some((item) => {
+    if (typeof item === 'string' || !item || typeof item !== 'object') return false;
+    const content = item.content;
+    if (!Array.isArray(content)) return false;
+    return content.some((part) => {
+      if (!part || typeof part !== 'object') return false;
+      return part.type === 'input_image'
+        || part.type === 'image_url'
+        || Object.hasOwn(part, 'image_url')
+        || Object.hasOwn(part, 'file_id');
+    });
+  });
+}
+
+export function maybeUpgradeModel(body) {
+  if (!body || !DEEPSEEK_MODELS.has(body.model)) return body;
+  if (!hasImageInput(body)) return body;
+  return { ...body, model: MULTIMODAL_FALLBACK_MODEL };
+}
+
+
+export async function forwardWithFallback(res, body, route, config, fetchImpl, displayModel = body.model) {
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
+  const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
+  const requestBody = normalizeResponsesRequest(body);
+  let upstream;
+  try {
+    upstream = await fetchImpl(route.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
+  } catch {
+    logEvent(config, {
+      event: 'api_fallback',
+      model: displayModel,
+      reason: 'network_error',
+      primary_endpoint: endpointName(route.endpoint),
+      fallback_endpoint: 'chat/completions'
+    });
+    await forwardChat(res, body, config, fetchImpl, displayModel);
+    return;
+  }
+  if (upstream.ok) {
+    await relayUpstream(res, upstream);
+    return;
+  }
+  logEvent(config, {
+    event: 'api_fallback',
+    model: displayModel,
+    reason: 'http_error',
+    primary_endpoint: endpointName(route.endpoint),
+    primary_status: upstream.status,
+    fallback_endpoint: 'chat/completions'
+  });
+  await forwardChat(res, body, config, fetchImpl, displayModel);
+}
+
+async function forwardChat(res, body, config, fetchImpl, displayModel) {
+  const chatBody = responsesToChatRequest(body);
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
+  const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
+  const endpoint = `${config.apiBaseUrl}/chat/completions`;
+  let upstream;
+  try {
+    upstream = await fetchImpl(endpoint, { method: 'POST', headers, body: JSON.stringify(chatBody), signal });
+  } catch (error) {
+    logEvent(config, {
+      event: 'api_fallback_result',
+      model: displayModel,
+      success: false,
+      status: 502,
+      fallback_endpoint: 'chat/completions',
+      reason: 'network_error'
+    });
+    sendJson(res, 502, { error: { message: error.message || 'chat fallback failed' } });
+    return;
+  }
+  if (!upstream.ok) {
+    logEvent(config, {
+      event: 'api_fallback_result',
+      model: displayModel,
+      success: false,
+      status: upstream.status,
+      fallback_endpoint: 'chat/completions',
+      reason: 'http_error'
+    });
+    await relayError(res, upstream);
+    return;
+  }
+  logEvent(config, {
+    event: 'api_fallback_result',
+    model: displayModel,
+    success: true,
+    status: upstream.status,
+    fallback_endpoint: 'chat/completions'
+  });
+  if (body.stream) {
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+    await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => res.write(sseEncode(event, data)));
+    res.end();
+    return;
+  }
+  const chat = await upstream.json();
+  sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
+}
+
+export async function relayUpstream(res, upstream) {
+  if (!upstream.ok) {
+    await relayError(res, upstream);
+    return;
+  }
+  const contentType = upstream.headers.get('content-type') || 'application/json';
+  res.writeHead(upstream.status, { 'content-type': contentType });
+  await pipeBody(upstream.body, res);
+  res.end();
+}
+
+export async function relayError(res, upstream) {
+  const text = await upstream.text();
+  let parsed;
+  try { parsed = JSON.parse(text); } catch { parsed = { error: { message: text.slice(0, 500) } }; }
+  sendJson(res, upstream.status, parsed);
+}
+
+export async function pipeBody(body, res) {
+  if (!body) return;
+  const reader = body.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(Buffer.from(value));
+    }
+  } finally { reader.releaseLock(); }
+}
+
+export function sendJson(res, status, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(status, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) });
+  res.end(body);
+}
+
+function endpointName(endpoint) {
+  return endpoint.split('/').pop() || endpoint;
+}

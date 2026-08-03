@@ -1,0 +1,55 @@
+{
+  "name": "@minar-kotonoha/opencode-api-adapter",
+  "version": "0.1.0",
+  "description": "A local Responses API adapter for OpenCode Go with protocol fallback and DeepSeek multimodal routing.",
+  "type": "module",
+  "main": "src/server.js",
+  "exports": {
+    ".": "./src/server.js",
+    "./routes": "./src/routes.js"
+  },
+  "bin": {
+    "opencode-api-adapter": "bin/opencode-api-adapter.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "catalog-template.json",
+    "config.example.json",
+    "README.md",
+    "README.zh-CN.md",
+    "README.en.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "opencode",
+    "responses-api",
+    "chat-completions",
+    "anthropic",
+    "codex",
+    "proxy",
+    "router"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/minar-kotonoha/opencode-api-adapter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/minar-kotonoha/opencode-api-adapter/issues"
+  },
+  "homepage": "https://github.com/minar-kotonoha/opencode-api-adapter",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --test test/*.test.js",
+    "smoke": "node scripts/smoke.mjs",
+    "switch:gpt-ds-gpt-ds": "node scripts/switch-gpt-deepseek-gpt-deepseek.mjs --mock",
+    "switch:ds-gpt-ds-gpt": "node scripts/switch-deepseek-gpt-deepseek-gpt.mjs --mock"
+  }
+}

@@ -1,0 +1,20 @@
+export const MODEL_META = {
+  'gpt-5.6-luna': { displayName: 'GPT 5.6 Luna', description: 'GPT 5.6 Luna via OpenCode Go', inputModalities: ['text', 'image'] },
+  'grok-4.5': { displayName: 'Grok 4.5', description: 'Grok 4.5 via OpenCode Go', inputModalities: ['text'] },
+  'glm-5.2': { displayName: 'GLM-5.2', description: 'GLM-5.2 via OpenCode Go', inputModalities: ['text'] },
+  'glm-5.1': { displayName: 'GLM-5.1', description: 'GLM-5.1 via OpenCode Go', inputModalities: ['text'] },
+  'kimi-k3': { displayName: 'Kimi K3', description: 'Kimi K3 via OpenCode Go', inputModalities: ['text'] },
+  'kimi-k2.7-code': { displayName: 'Kimi K2.7 Code', description: 'Kimi K2.7 Code via OpenCode Go', inputModalities: ['text'] },
+  'kimi-k2.6': { displayName: 'Kimi K2.6', description: 'Kimi K2.6 via OpenCode Go', inputModalities: ['text'] },
+  'deepseek-v4-pro': { displayName: 'DeepSeek V4 Pro', description: 'DeepSeek V4 Pro via OpenCode Go (image routed to GPT 5.6 Luna)', inputModalities: ['text', 'image'] },
+  'deepseek-v4-flash': { displayName: 'DeepSeek V4 Flash', description: 'DeepSeek V4 Flash via OpenCode Go (image routed to GPT 5.6 Luna)', inputModalities: ['text', 'image'] },
+  'mimo-v2.5': { displayName: 'MiMo-V2.5', description: 'MiMo-V2.5 via OpenCode Go', inputModalities: ['text'] },
+  'mimo-v2.5-pro': { displayName: 'MiMo-V2.5-Pro', description: 'MiMo-V2.5-Pro via OpenCode Go', inputModalities: ['text'] },
+  'hy3': { displayName: 'Hy3', description: 'Hy3 via OpenCode Go', inputModalities: ['text'] },
+  'minimax-m3': { displayName: 'MiniMax M3', description: 'MiniMax M3 via OpenCode Go', inputModalities: ['text'] },
+  'minimax-m2.7': { displayName: 'MiniMax M2.7', description: 'MiniMax M2.7 via OpenCode Go', inputModalities: ['text'] },
+  'minimax-m2.5': { displayName: 'MiniMax M2.5', description: 'MiniMax M2.5 via OpenCode Go', inputModalities: ['text'] },
+  'qwen3.7-max': { displayName: 'Qwen3.7 Max', description: 'Qwen3.7 Max via OpenCode Go', inputModalities: ['text'] },
+  'qwen3.7-plus': { displayName: 'Qwen3.7 Plus', description: 'Qwen3.7 Plus via OpenCode Go', inputModalities: ['text'] },
+  'qwen3.6-plus': { displayName: 'Qwen3.6 Plus', description: 'Qwen3.6 Plus via OpenCode Go', inputModalities: ['text'] }
+};

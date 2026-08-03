@@ -1,0 +1,27 @@
+import { readFileSync, existsSync } from 'node:fs';
+import path from 'node:path';
+
+export const DEFAULT_CONFIG = {
+  host: '127.0.0.1',
+  port: 15721,
+  apiBaseUrl: 'https://opencode.ai/zen/go/v1',
+  apiKeyEnv: 'OPENCODE_GO_API_KEY',
+  catalogFile: 'catalog.json',
+  timeouts: { requestMs: 600000, streamIdleMs: 180000 },
+  models: {}
+};
+
+export function loadConfig({ configPath = 'config.json', env = process.env, cwd = process.cwd() } = {}) {
+  const abs = path.resolve(cwd, configPath);
+  if (!existsSync(abs)) throw new Error(`config file not found: ${abs}`);
+  const raw = JSON.parse(readFileSync(abs, 'utf8'));
+  const config = {
+    ...DEFAULT_CONFIG,
+    ...raw,
+    timeouts: { ...DEFAULT_CONFIG.timeouts, ...(raw.timeouts || {}) },
+    models: raw.models || {}
+  };
+  const apiKey = env[config.apiKeyEnv];
+  if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);
+  return { ...config, apiKey };
+}
