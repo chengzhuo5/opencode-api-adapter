@@ -123,9 +123,16 @@ export async function maybeCompressInput(body, config, client, storeDir, cache, 
       const prev = safetyMap.get(body.model);
       const current = meta.outputs;
       let ok = true;
-      if (prev && prev.hashes.length > 0 && current.length >= prev.hashes.length) {
-        for (let i = 0; i < prev.hashes.length; i++) {
-          if (current[i].textHash !== prev.hashes[i]) { ok = false; break; }
+      let comparable = false;
+      if (prev && prev.fingerprints.length > 0 && current.length >= prev.fingerprints.length) {
+        comparable = true;
+        for (let i = 0; i < prev.fingerprints.length; i++) {
+          if (current[i].fingerprint !== prev.fingerprints[i]) { comparable = false; break; }
+        }
+        if (comparable) {
+          for (let i = 0; i < prev.hashes.length; i++) {
+            if (current[i].textHash !== prev.hashes[i]) { ok = false; break; }
+          }
         }
       }
       safetyMap.set(body.model, { hashes: current.map((t) => t.textHash), fingerprints: current.map((t) => t.fingerprint) });
@@ -133,6 +140,7 @@ export async function maybeCompressInput(body, config, client, storeDir, cache, 
         event: 'cache_safety_check',
         model: body.model,
         ok,
+        comparable,
         ...(ok ? {} : { reason: 'prefix_drift' })
       });
     }

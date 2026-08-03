@@ -149,3 +149,25 @@ test('maybeCompressInput falls back to original body when daemon is unreachable'
   assert.equal(result, body);
   assert.ok(logs.some((e) => e.event === 'context_compression' && e.reason === 'backend_unavailable'));
 });
+
+test('cache safety check does not report prefix drift across different sessions', async () => {
+  const logs = [];
+  const client = {
+    compress: async (messages) => {
+      const content = messages[0].content;
+      return { messages: [{ role: 'user', content: content.startsWith('session A') ? 'compressed-A' : 'compressed-B' }], stats: {} };
+    }
+  };
+  const config = { compress: { enabled: true, backend: 'lean-ctx' }, logger: (e) => logs.push(e) };
+  const cache = new Map();
+  const safety = new Map();
+  const outA = { type: 'function_call_output', id: 'fco_a1', call_id: 'a1', output: 'session A output' };
+  const outB = { type: 'function_call_output', id: 'fco_b1', call_id: 'b1', output: 'session B output' };
+  await maybeCompressInput({ model: 'deepseek-v4-flash', input: [outA] }, config, client, null, cache, safety);
+  await maybeCompressInput({ model: 'deepseek-v4-flash', input: [outB] }, config, client, null, cache, safety);
+  const checks = logs.filter((e) => e.event === 'cache_safety_check');
+  assert.equal(checks.length, 2);
+  assert.equal(checks[1].ok, true, 'different session must not be reported as prefix drift');
+  assert.equal(checks[1].reason, undefined);
+});
+
