@@ -6,3 +6,6 @@ config.json
 test.py
 scripts/register-autostart.ps1
 scripts/start-router-hidden.vbs
+
+work/
+ctx-store/
