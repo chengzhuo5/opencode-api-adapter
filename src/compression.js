@@ -79,9 +79,12 @@ export function storeTurn(turn, storeDir) {
 export async function compressInput(input, ctx) {
   const { prefix, turns } = splitTurns(input);
   const compressed = [...prefix];
+  const meta = { turns: [], overall: { chars_before: 0, chars_after: 0, turns_total: turns.length, turns_cached: 0, turns_compressed: 0, saved_pct: 0 } };
+  ctx.meta = meta;
   for (let i = 0; i < turns.length; i++) {
     const turn = turns[i];
     const fingerprint = turnFingerprint(turn);
+    const charsBefore = JSON.stringify(turn).length;
     let text = ctx.cache.get(fingerprint);
     let cached = true;
     if (text === undefined) {
@@ -94,6 +97,14 @@ export async function compressInput(input, ctx) {
       }
       cached = false;
     }
+    const charsAfter = text.length;
+    const savedPct = charsBefore > 0 ? Math.round((1 - charsAfter / charsBefore) * 100) : 0;
+    meta.overall.chars_before += charsBefore;
+    meta.overall.chars_after += charsAfter;
+    if (cached) meta.overall.turns_cached += 1;
+    else meta.overall.turns_compressed += 1;
+    const textHash = createHash('sha256').update(text).digest('hex');
+    meta.turns.push({ fingerprint, cached, textHash, savedPct, charsBefore, charsAfter });
     const archiveFile = storeTurn(turn, ctx.storeDir);
     const marker = archiveFile ? ` [[ctx:${fingerprint}|${archiveFile}]]` : '';
     compressed.push({
@@ -106,18 +117,46 @@ export async function compressInput(input, ctx) {
       model: ctx.model,
       turn_index: i + 1,
       cached,
-      chars_before: JSON.stringify(turn).length,
-      chars_after: text.length
+      chars_before: charsBefore,
+      chars_after: charsAfter,
+      saved_pct: savedPct
     });
   }
+  meta.overall.saved_pct = meta.overall.chars_before > 0
+    ? Math.round((1 - meta.overall.chars_after / meta.overall.chars_before) * 100)
+    : 0;
   return compressed;
 }
 
-export async function maybeCompressInput(body, config, client, storeDir, cache) {
+export async function maybeCompressInput(body, config, client, storeDir, cache, safetyMap) {
   if (!config?.compress?.enabled || config.compress.backend !== 'lean-ctx') return body;
   try {
     const ctx = { client, model: body.model, storeDir, cache, log: (e) => logEvent(config, e) };
     const input = await compressInput(body.input, ctx);
+    const meta = ctx.meta;
+    logEvent(config, {
+      event: 'context_compression',
+      model: body.model,
+      ...meta.overall,
+      reason: 'ok'
+    });
+    if (safetyMap) {
+      const prev = safetyMap.get(body.model);
+      const current = meta.turns;
+      let ok = true;
+      if (prev && prev.hashes.length > 0 && current.length >= prev.hashes.length) {
+        for (let i = 0; i < prev.hashes.length; i++) {
+          if (current[i].textHash !== prev.hashes[i]) { ok = false; break; }
+        }
+      }
+      safetyMap.set(body.model, { hashes: current.map((t) => t.textHash), fingerprints: current.map((t) => t.fingerprint) });
+      logEvent(config, {
+        event: 'cache_safety_check',
+        model: body.model,
+        ok,
+        ...(ok ? {} : { reason: 'prefix_drift' })
+      });
+    }
     return { ...body, input };
   } catch {
     logEvent(config, { event: 'context_compression', model: body.model, reason: 'backend_unavailable' });

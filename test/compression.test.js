@@ -99,3 +99,47 @@ test('compressInput archives originals and leaves ctx markers', async () => {
   assert.equal(archived[0].content[0].text, 'secret');
 });
 
+import { maybeCompressInput } from '../src/compression.js';
+
+test('compressInput logs saved percentage per turn and overall meta', async () => {
+  const logs = [];
+  const client = { compress: async () => ({ messages: [{ role: 'user', content: 'tiny' }], stats: {} }) };
+  const ctx = { client, model: 'x', storeDir: null, cache: new Map(), log: (e) => logs.push(e) };
+  const input = [{ type: 'message', role: 'user', id: 'u1', content: [{ type: 'input_text', text: 'A'.repeat(1000) }] }];
+  await compressInput(input, ctx);
+  const turnLog = logs.find((e) => e.event === 'context_compression' && e.turn_index === 1);
+  assert.ok(typeof turnLog.saved_pct === 'number', 'turn log should include saved_pct');
+  assert.ok(turnLog.chars_before > 0);
+  assert.ok(ctx.meta.overall.saved_pct > 0, 'overall meta should include saved_pct');
+  assert.equal(ctx.meta.turns[0].cached, false);
+  assert.ok(ctx.meta.turns[0].textHash);
+});
+
+test('maybeCompressInput emits cache safety check and detects prefix drift', async () => {
+  let calls = 0;
+  const client = { compress: async () => { calls++; return { messages: [{ role: 'user', content: `AC${calls}` }], stats: {} }; } };
+  const config = { compress: { enabled: true, backend: 'lean-ctx' }, logger: (e) => logs.push(e) };
+  const logs = [];
+  const cache = new Map();
+  const safety = new Map();
+  const mk = (id) => ({ type: 'message', role: 'user', id, content: [{ type: 'input_text', text: 'hello' }] });
+  const body1 = { model: 'deepseek-v4-flash', input: [mk('u1')] };
+  const body2 = { model: 'deepseek-v4-flash', input: [mk('u1'), { type: 'message', role: 'assistant', id: 'a1', content: [{ type: 'output_text', text: 'ok', annotations: [] }] }, mk('u2')] };
+  await maybeCompressInput(body1, config, client, null, cache, safety);
+  await maybeCompressInput(body2, config, client, null, cache, safety);
+  const okLog = logs.find((e) => e.event === 'cache_safety_check' && e.ok === true);
+  assert.ok(okLog, 'expected a passing cache safety check');
+
+  // Simulate determinism break: same turn fingerprint produces different text after cache eviction
+  logs.length = 0;
+  cache.clear();
+  safety.clear();
+  const client2 = { compress: async () => ({ messages: [{ role: 'user', content: 'BROKEN' }], stats: {} }) };
+  await maybeCompressInput(body1, { ...config, logger: (e) => logs.push(e) }, client2, null, cache, safety);
+  cache.clear();
+  const client3 = { compress: async () => ({ messages: [{ role: 'user', content: 'DIFFERENT' }], stats: {} }) };
+  await maybeCompressInput(body1, { ...config, logger: (e) => logs.push(e) }, client3, null, cache, safety);
+  const failLog = logs.find((e) => e.event === 'cache_safety_check' && e.ok === false);
+  assert.ok(failLog, 'expected a failing cache safety check on prefix drift');
+});
+

@@ -12,6 +12,7 @@ import { createLeanCtxClient } from './leanCtxClient.js';
 export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
   const compressEnabled = config?.compress?.enabled && config.compress.backend === 'lean-ctx';
   const ctxCache = compressEnabled ? new Map() : null;
+  const ctxSafety = compressEnabled ? new Map() : null;
   const ctxStoreDir = compressEnabled && config.compress.storeDir ? path.resolve(config.compress.storeDir) : null;
   const ctxClient = compressEnabled ? createLeanCtxClient({ baseUrl: config.compress.baseUrl, token: config.compress.token, timeoutMs: config.compress.timeoutMs }) : null;
   return http.createServer(async (req, res) => {
@@ -28,7 +29,7 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const body = await readJson(req);
         const route = resolveRoute(config, body.model);
-        await forward(res, body, route, config, fetchImpl, { client: ctxClient, storeDir: ctxStoreDir, cache: ctxCache });
+        await forward(res, body, route, config, fetchImpl, { client: ctxClient, storeDir: ctxStoreDir, cache: ctxCache, safety: ctxSafety });
         return;
       }
       sendJson(res, 404, { error: { message: `not found: ${req.method} ${url.pathname}` } });
@@ -72,7 +73,7 @@ async function forward(res, body, route, config, fetchImpl, compression) {
       reason: 'image_input'
     });
   }
-  const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache);
+  const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache, compression?.safety);
   await forwardWithFallback(res, compressed, route, config, fetchImpl, body.model);
 }
 
