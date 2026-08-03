@@ -1,6 +1,6 @@
 {
   "name": "@minar-kotonoha/opencode-api-adapter",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A local Responses API adapter for OpenCode Go with protocol fallback and DeepSeek multimodal routing.",
   "type": "module",
   "main": "src/server.js",
