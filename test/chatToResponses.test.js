@@ -91,3 +91,21 @@ test('translates deepseek reasoning_content deltas into reasoning output items',
   assert.ok(done);
 });
 
+
+test('emits response.failed instead of silent stream break', async () => {
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"he"}}]}\n\n'));
+      setTimeout(() => controller.error(new Error('upstream stream exploded')), 0);
+    }
+  });
+  const events = [];
+  await translateChatStreamToResponses(body, 'deepseek-v4-flash', (event, data) => events.push({ event, data }));
+  const failed = events.find((item) => item.event === 'response.failed');
+  assert.ok(failed, 'expected response.failed event');
+  assert.equal(failed.data.type, 'response.failed');
+  assert.equal(failed.data.response.status, 'failed');
+  assert.ok(failed.data.response.error);
+  assert.equal(events[events.length - 1].event, 'response.failed');
+});
+

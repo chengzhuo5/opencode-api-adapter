@@ -55,6 +55,7 @@ export async function translateAnthropicStreamToResponses(body, requestModel, wr
   let currentIndex = -1;
   let currentText = '';
 
+  try {
   for await (const { data } of sseEvents(body)) {
     let event;
     try {
@@ -134,6 +135,12 @@ export async function translateAnthropicStreamToResponses(body, requestModel, wr
       currentItem = null;
       currentText = '';
     }
+  }
+  } catch (error) {
+    response.status = 'failed';
+    response.error = { code: 'upstream_error', message: (error?.message || 'stream failed').slice(0, 200) };
+    writeEvent('response.failed', { type: 'response.failed', response });
+    return;
   }
 
   response.status = 'completed';

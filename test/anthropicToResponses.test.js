@@ -54,3 +54,20 @@ test('does not expose internal output indexes in streamed tool calls', async () 
   assert.equal(Object.hasOwn(added.data.item, 'outputIndex'), false);
   assert.equal(Object.hasOwn(done.data.item, 'outputIndex'), false);
 });
+
+
+test('emits response.failed on anthropic stream break', async () => {
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'));
+      setTimeout(() => controller.error(new Error('anthropic stream exploded')), 0);
+    }
+  });
+  const events = [];
+  await translateAnthropicStreamToResponses(body, 'minimax-m3', (event, data) => events.push({ event, data }));
+  const failed = events.find((item) => item.event === 'response.failed');
+  assert.ok(failed, 'expected response.failed event');
+  assert.equal(failed.data.response.status, 'failed');
+  assert.equal(events[events.length - 1].event, 'response.failed');
+});
+

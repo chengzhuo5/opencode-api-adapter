@@ -65,6 +65,7 @@ export async function translateChatStreamToResponses(body, requestModel, writeEv
   let messageIndex = -1;
   const toolItems = new Map();
 
+  try {
   for await (const { data } of sseEvents(body)) {
     if (data === '[DONE]') break;
     let chunk;
@@ -168,6 +169,12 @@ export async function translateChatStreamToResponses(body, requestModel, writeEv
       text: reasoningText
     });
     writeEvent('response.output_item.done', { type: 'response.output_item.done', output_index: reasoningIndex, item: reasoningItem });
+  }
+  } catch (error) {
+    response.status = 'failed';
+    response.error = { code: 'upstream_error', message: (error?.message || 'stream failed').slice(0, 200) };
+    writeEvent('response.failed', { type: 'response.failed', response });
+    return;
   }
 
   if (messageItem) {
