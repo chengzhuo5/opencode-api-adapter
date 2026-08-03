@@ -284,3 +284,23 @@ test('does not cache transient responses failures like 500', async () => {
   assert.equal(calls[2], 'https://x/v1/responses');
 });
 
+
+test('logs responses_unsupported only once per model', async () => {
+  clearUnsupportedCache();
+  const events = [];
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/responses')) {
+      return new Response(JSON.stringify({ error: { code: 'invalid_prompt', message: 'unsupported' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'deepseek-v4-flash', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({ apiKey: 'k', logger: (event) => events.push(event), apiBaseUrl: 'https://x/v1', models: {} }, fetchImpl, async (base) => {
+    const make = () => fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [] }) });
+    await make();
+    await make();
+    await make();
+  });
+  const unsupported = events.filter((e) => e.event === 'api_fallback' && e.reason === 'responses_unsupported');
+  assert.equal(unsupported.length, 1, 'expected exactly one responses_unsupported log');
+});
+

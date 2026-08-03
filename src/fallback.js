@@ -5,10 +5,12 @@ import { sseEncode } from './sse.js';
 import { logEvent } from './logger.js';
 
 const unsupportedResponses = new Set();
+const unsupportedNotified = new Set();
 const UNSUPPORTED_STATUSES = new Set([400, 404, 405]);
 
 export function clearUnsupportedCache() {
   unsupportedResponses.clear();
+  unsupportedNotified.clear();
 }
 
 
@@ -45,13 +47,16 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
   const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
   if (unsupportedResponses.has(body.model)) {
-    logEvent(config, {
-      event: 'api_fallback',
-      model: displayModel,
-      reason: 'responses_unsupported',
-      primary_endpoint: endpointName(route.endpoint),
-      fallback_endpoint: 'chat/completions'
-    });
+    if (!unsupportedNotified.has(body.model)) {
+      unsupportedNotified.add(body.model);
+      logEvent(config, {
+        event: 'api_fallback',
+        model: displayModel,
+        reason: 'responses_unsupported',
+        primary_endpoint: endpointName(route.endpoint),
+        fallback_endpoint: 'chat/completions'
+      });
+    }
     await forwardChat(res, body, config, fetchImpl, displayModel);
     return;
   }
