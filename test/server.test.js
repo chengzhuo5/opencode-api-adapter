@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRouter } from '../src/server.js';
 
 async function withServer(config, fetchImpl, fn) {
@@ -26,6 +29,40 @@ test('models endpoint returns catalog', async () => {
     const res = await fetch(`${base}/v1/models`);
     const data = await res.json();
     assert.equal(data.models[0].slug, 'x');
+  });
+});
+
+test('ctx endpoint returns archived output by hash', async () => {
+  const storeDir = mkdtempSync(path.join(os.tmpdir(), 'ctx-http-'));
+  const hash = 'a'.repeat(64);
+  writeFileSync(path.join(storeDir, `${hash}.json`), JSON.stringify({
+    type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'original payload'
+  }));
+  await withServer({
+    apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {},
+    compress: { enabled: true, backend: 'lean-ctx', storeDir }
+  }, async () => {}, async (base) => {
+    const res = await fetch(`${base}/v1/ctx/${hash}`);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.output, 'original payload');
+  });
+});
+
+test('ctx endpoint 400s bad hashes and 404s unknown or disabled compression', async () => {
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {} }, async () => {}, async (base) => {
+    const res = await fetch(`${base}/v1/ctx/${'b'.repeat(64)}`);
+    assert.equal(res.status, 404, 'compression disabled should 404');
+  });
+  const storeDir = mkdtempSync(path.join(os.tmpdir(), 'ctx-http2-'));
+  await withServer({
+    apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {},
+    compress: { enabled: true, backend: 'lean-ctx', storeDir }
+  }, async () => {}, async (base) => {
+    const bad = await fetch(`${base}/v1/ctx/not-a-hash`);
+    assert.equal(bad.status, 400);
+    const missing = await fetch(`${base}/v1/ctx/${'c'.repeat(64)}`);
+    assert.equal(missing.status, 404);
   });
 });
 
@@ -309,4 +346,3 @@ test('responses passthrough flattens assistant history for upstream', async () =
     { type: 'function_call_output', call_id: 'call_1', output: 'ok' }
   ]);
 });
-

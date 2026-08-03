@@ -6,7 +6,7 @@ import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js
 import { anthropicToResponsesObject, translateAnthropicStreamToResponses } from './translate/anthropicToResponses.js';
 import { maybeUpgradeModel, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
 import { logEvent } from './logger.js';
-import { maybeCompressInput } from './compression.js';
+import { maybeCompressInput, loadOutput } from './compression.js';
 import { createLeanCtxClient } from './leanCtxClient.js';
 
 export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
@@ -25,6 +25,20 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
       }
       if (req.method === 'GET' && url.pathname === '/v1/models') {
         sendJson(res, 200, config.catalog || { models: [] });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/v1/ctx/')) {
+        const hash = url.pathname.slice('/v1/ctx/'.length);
+        if (!/^[a-f0-9]{64}$/.test(hash)) {
+          sendJson(res, 400, { error: { message: `invalid ctx hash: ${hash}` } });
+          return;
+        }
+        const archived = loadOutput(hash, ctxStoreDir);
+        if (!archived) {
+          sendJson(res, 404, { error: { message: `ctx ${hash} not found` } });
+          return;
+        }
+        sendJson(res, 200, archived);
         return;
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {

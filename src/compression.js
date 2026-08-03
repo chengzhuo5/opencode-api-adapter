@@ -1,6 +1,6 @@
 import { logEvent } from './logger.js';
 import { createHash } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const DEFAULT_CACHE_SIZE = 1000;
@@ -59,6 +59,17 @@ export function storeOutput(output, storeDir) {
   const file = path.join(storeDir, `${hash}.json`);
   if (!existsSync(file)) writeFileSync(file, JSON.stringify(output));
   return file;
+}
+
+/**
+ * HTTP 取回（GET /v1/ctx/<sha256>）：
+ * 按存档指纹返回原始 function_call_output JSON；哈希非法或文件不存在时返回 null。
+ */
+export function loadOutput(hash, storeDir) {
+  if (!storeDir || !/^[a-f0-9]{64}$/.test(String(hash ?? ''))) return null;
+  const file = path.join(storeDir, `${hash}.json`);
+  if (!existsSync(file)) return null;
+  return JSON.parse(readFileSync(file, 'utf8'));
 }
 
 export async function compressInput(input, ctx) {

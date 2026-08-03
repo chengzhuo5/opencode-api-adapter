@@ -8,7 +8,9 @@ import {
   compressOutput,
   compressInput,
   maybeCompressInput,
-  estimateTokens
+  estimateTokens,
+  storeOutput,
+  loadOutput
 } from '../src/compression.js';
 
 function tmpdir() {
@@ -228,4 +230,14 @@ test('maybeCompressInput accumulates token totals and logs cumulative ratio', as
   assert.ok(last.total_saved_pct > 0, 'cumulative ratio should be positive');
   assert.equal(stats.requests, 2, 'stats accumulator should count requests');
   assert.equal(last.total_tokens_before, first.tokens_before * 2, 'cached reuse still counts forwarded size');
+});
+
+test('loadOutput retrieves archived output and rejects bad hashes', () => {
+  const dir = tmpdir();
+  const item = { type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'secret' };
+  storeOutput(item, dir);
+  const hash = outputFingerprint(item);
+  assert.deepEqual(loadOutput(hash, dir), item, 'should return the archived original JSON');
+  assert.equal(loadOutput('zzz-not-a-hash', dir), null, 'bad hash must be rejected');
+  assert.equal(loadOutput(hash, null), null, 'no store dir must yield null');
 });
