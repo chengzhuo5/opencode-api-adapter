@@ -20,6 +20,17 @@ test('hasImageInput returns false without images', () => {
   assert.equal(hasImageInput({}), false);
 });
 
+test('hasImageInput ignores images from older history turns', () => {
+  const body = {
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_image', image_url: 'https://x/old.png' }] },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'old answer' }] },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'new text only' }] }
+    ]
+  };
+  assert.equal(hasImageInput(body), false);
+});
+
 test('maybeUpgradeModel upgrades deepseek with image to luna', () => {
   const body = { model: 'deepseek-v4-flash', input: [{ role: 'user', content: [{ type: 'input_image', image_url: 'https://x/1.png' }] }] };
   const upgraded = maybeUpgradeModel(body);
@@ -226,3 +237,50 @@ test('logs API fallback trigger and result without request contents', async () =
   assert.equal(JSON.stringify(events).includes('secret-key'), false);
   assert.equal(JSON.stringify(events).includes('private prompt'), false);
 });
+
+import { clearUnsupportedCache } from '../src/fallback.js';
+
+test('remembers unsupported responses endpoint for subsequent requests', async () => {
+  clearUnsupportedCache();
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url, body });
+    if (url.endsWith('/responses')) {
+      return new Response(JSON.stringify({ error: { code: 'invalid_prompt', message: 'unsupported' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'deepseek-v4-flash', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {} }, fetchImpl, async (base) => {
+    const make = () => fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [] }) });
+    const r1 = await make();
+    assert.equal(r1.status, 200);
+    const r2 = await make();
+    assert.equal(r2.status, 200);
+  });
+  assert.equal(calls.length, 3, 'expected responses+chat then direct chat');
+  assert.equal(calls[0].url, 'https://x/v1/responses');
+  assert.equal(calls[1].url, 'https://x/v1/chat/completions');
+  assert.equal(calls[2].url, 'https://x/v1/chat/completions');
+});
+
+test('does not cache transient responses failures like 500', async () => {
+  clearUnsupportedCache();
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.endsWith('/responses')) {
+      return new Response(JSON.stringify({ error: { message: 'boom' } }), { status: 500, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'deepseek-v4-flash', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {} }, fetchImpl, async (base) => {
+    const make = () => fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [] }) });
+    await make();
+    await make();
+  });
+  assert.equal(calls.length, 4, 'expected responses+chat for each request');
+  assert.equal(calls[0], 'https://x/v1/responses');
+  assert.equal(calls[2], 'https://x/v1/responses');
+});
+

@@ -4,23 +4,33 @@ import { normalizeResponsesRequest } from './translate/responsesContext.js';
 import { sseEncode } from './sse.js';
 import { logEvent } from './logger.js';
 
+const unsupportedResponses = new Set();
+const UNSUPPORTED_STATUSES = new Set([400, 404, 405]);
+
+export function clearUnsupportedCache() {
+  unsupportedResponses.clear();
+}
+
+
 const DEEPSEEK_MODELS = new Set(['deepseek-v4-pro', 'deepseek-v4-flash']);
 const MULTIMODAL_FALLBACK_MODEL = 'gpt-5.6-luna';
 
 export function hasImageInput(body) {
   const input = body?.input;
   if (!Array.isArray(input)) return false;
-  return input.some((item) => {
-    if (typeof item === 'string' || !item || typeof item !== 'object') return false;
-    const content = item.content;
-    if (!Array.isArray(content)) return false;
-    return content.some((part) => {
-      if (!part || typeof part !== 'object') return false;
-      return part.type === 'input_image'
-        || part.type === 'image_url'
-        || Object.hasOwn(part, 'image_url')
-        || Object.hasOwn(part, 'file_id');
-    });
+  const latestUser = [...input].reverse().find((item) => (
+    item
+    && typeof item === 'object'
+    && (item.role === 'user' || (item.type === 'message' && item.role === 'user'))
+  ));
+  const content = latestUser?.content;
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => {
+    if (!part || typeof part !== 'object') return false;
+    return part.type === 'input_image'
+      || part.type === 'image_url'
+      || Object.hasOwn(part, 'image_url')
+      || Object.hasOwn(part, 'file_id');
   });
 }
 
@@ -34,6 +44,17 @@ export function maybeUpgradeModel(body) {
 export async function forwardWithFallback(res, body, route, config, fetchImpl, displayModel = body.model) {
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
   const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
+  if (unsupportedResponses.has(body.model)) {
+    logEvent(config, {
+      event: 'api_fallback',
+      model: displayModel,
+      reason: 'responses_unsupported',
+      primary_endpoint: endpointName(route.endpoint),
+      fallback_endpoint: 'chat/completions'
+    });
+    await forwardChat(res, body, config, fetchImpl, displayModel);
+    return;
+  }
   const requestBody = normalizeResponsesRequest(body);
   let upstream;
   try {
@@ -52,6 +73,9 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
   if (upstream.ok) {
     await relayUpstream(res, upstream);
     return;
+  }
+  if (UNSUPPORTED_STATUSES.has(upstream.status)) {
+    unsupportedResponses.add(body.model);
   }
   logEvent(config, {
     event: 'api_fallback',

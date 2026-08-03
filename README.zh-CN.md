@@ -8,7 +8,7 @@
 - 非 Anthropic 模型优先请求 `/responses`，网络错误、超时或任何非 2xx 自动降级到 `/chat/completions`。
 - Chat Completions 响应和 SSE 会转换回 Responses 格式。
 - MiniMax/Qwen 的 Anthropic Messages 路由保持独立，不参与 Responses→Chat fallback。
-- DeepSeek V4 Pro/Flash 检测到 `input_image`、`image_url` 或 `file_id` 时自动切换到 `gpt-5.6-luna`。
+- DeepSeek V4 Pro/Flash 在最新用户消息中检测到 `input_image`、`image_url` 或 `file_id` 时自动切换到 `gpt-5.6-luna`；旧历史消息中的图片不会触发降级。
 - 跨协议上下文规范化：工具调用、`reasoning_content`、旧的重复工具名和历史内部字段都会被清理或转换。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
 - 支持作为 CLI 启动，也可以导入 `createRouter` 构建自己的 Node HTTP 服务。
@@ -109,7 +109,7 @@ requires_openai_auth = true
 experimental_bearer_token = "PROXY_MANAGED"
 ```
 
-启动时会生成 `catalog.json`。DeepSeek 的 catalog 能力声明包含 `text` 和 `image`；当请求中真的出现图片时，路由器才会把请求交给 Luna。
+启动时会生成 `catalog.json`。DeepSeek 的 catalog 能力声明包含 `text` 和 `image`；只有最新用户消息中真的出现图片时，路由器才会把请求交给 Luna。
 
 ## 结构化日志
 

@@ -8,7 +8,7 @@
 - Non-Anthropic models try `/responses` first and fall back automatically to `/chat/completions` on network errors, timeouts, or any non-2xx response.
 - Chat Completions JSON and SSE responses are converted back to the Responses format.
 - MiniMax/Qwen Anthropic Messages routing remains independent and is not included in Responses→Chat fallback.
-- DeepSeek V4 Pro/Flash requests containing `input_image`, `image_url`, or `file_id` are automatically routed to `gpt-5.6-luna`.
+- DeepSeek V4 Pro/Flash requests whose latest user message contains `input_image`, `image_url`, or `file_id` are automatically routed to `gpt-5.6-luna`; images in older history turns do not trigger the fallback.
 - Cross-protocol history normalization preserves tool calls and reasoning, removes internal fields, and repairs duplicated historical tool names.
 - Structured console logs report multimodal and API fallback events without logging API keys, full prompts, or image data.
 - Usable as a CLI or imported as a Node HTTP server.
@@ -109,7 +109,7 @@ requires_openai_auth = true
 experimental_bearer_token = "PROXY_MANAGED"
 ```
 
-The adapter generates `catalog.json` at startup. DeepSeek advertises both `text` and `image`; images are routed to Luna only when an image is actually present in the request.
+The adapter generates `catalog.json` at startup. DeepSeek advertises both `text` and `image`; images are routed to Luna only when an image is present in the latest user message.
 
 ## Structured logs
 
