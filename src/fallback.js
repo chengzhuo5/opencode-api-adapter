@@ -52,6 +52,7 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
         model: displayModel,
         reason: 'responses_unsupported',
         primary_endpoint: endpointName(route.endpoint),
+        primary_url: route.endpoint,
         fallback_endpoint: 'chat/completions'
       });
     }
@@ -77,6 +78,7 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
         model: displayModel,
         reason: 'network_error',
         primary_endpoint: endpointName(provider.endpoint),
+        primary_url: provider.endpoint,
         fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
       });
       if (lastProvider) {
@@ -97,6 +99,7 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
       model: displayModel,
       reason: 'http_error',
       primary_endpoint: endpointName(provider.endpoint),
+      primary_url: provider.endpoint,
       primary_status: upstream.status,
       fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
     });
@@ -122,6 +125,7 @@ async function forwardChat(res, body, config, fetchImpl, displayModel) {
       success: false,
       status: 502,
       fallback_endpoint: 'chat/completions',
+      fallback_url: endpoint,
       reason: 'network_error'
     });
     sendJson(res, 502, { error: { message: error.message || 'chat fallback failed' } });
@@ -134,6 +138,7 @@ async function forwardChat(res, body, config, fetchImpl, displayModel) {
       success: false,
       status: upstream.status,
       fallback_endpoint: 'chat/completions',
+      fallback_url: endpoint,
       reason: 'http_error'
     });
     await relayError(res, upstream);
@@ -144,7 +149,8 @@ async function forwardChat(res, body, config, fetchImpl, displayModel) {
     model: displayModel,
     success: true,
     status: upstream.status,
-    fallback_endpoint: 'chat/completions'
+    fallback_endpoint: 'chat/completions',
+    fallback_url: endpoint
   });
   if (body.stream) {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });

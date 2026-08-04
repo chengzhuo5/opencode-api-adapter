@@ -402,3 +402,37 @@ test('deepseek image request routes upgraded luna through its custom provider', 
   });
   assert.deepEqual(calls, ['https://ergouapi.com/v1/responses'], 'upgraded luna must use its custom provider endpoint');
 });
+
+test('logs include full endpoint URLs on fallback and multimodal events', async () => {
+  const events = [];
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/responses')) {
+      return new Response(JSON.stringify({ error: { message: 'down' } }), { status: 503, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'deepseek-v4-flash', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    logger: (e) => events.push(e),
+    apiBaseUrl: 'https://opencode.example/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: false,
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }, { type: 'input_image', image_url: 'https://x/1.png' }] }]
+      })
+    });
+    assert.equal(res.status, 200);
+  });
+
+  const multimodal = events.find((e) => e.event === 'multimodal_fallback');
+  assert.equal(multimodal.endpoint, 'https://ergouapi.com/v1/responses', 'multimodal log should carry the upgraded endpoint');
+  const fallback = events.find((e) => e.event === 'api_fallback' && e.primary_url);
+  assert.equal(fallback.primary_url, 'https://ergouapi.com/v1/responses', 'api_fallback should carry the primary full URL');
+  const result = events.find((e) => e.event === 'api_fallback_result' && e.success === true);
+  assert.equal(result.fallback_url, 'https://opencode.example/v1/chat/completions', 'api_fallback_result should carry the chat full URL');
+});

@@ -85,7 +85,8 @@ async function forward(res, body, route, config, fetchImpl, compression) {
       event: 'multimodal_fallback',
       model: body.model,
       fallback_model: upgraded.model,
-      reason: 'image_input'
+      reason: 'image_input',
+      endpoint: route.endpoint
     });
   }
   const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache, compression?.safety, compression?.stats);
