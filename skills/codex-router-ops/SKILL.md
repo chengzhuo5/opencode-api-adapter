@@ -7,7 +7,7 @@ description: 维护 Codex OpenCode API 路由（codex-router / opencode-api-adap
 
 ## 项目信息
 
-- 项目根目录：`C:\Users\cheng\Documents\Codex\2026-08-03\new-chat-2\outputs\codex-router`
+- 项目根目录：`C:\Code\AI\opencode-api-adapter`
 - 路由监听：`http://127.0.0.1:15722`（config.json 的 host/port）
 - Git 远端：`https://github.com/chengzhuo5/opencode-api-adapter.git`（master）
 - 启动命令：`node src/main.js`（读取 `config.json`）
@@ -132,3 +132,16 @@ Codex 发图的真实形态：图片在 **`function_call_output.output` 数组**
 
 - 日志、调试输出中**不要打印 API key 明文**（脱敏：只显示后 4 位）
 - 读取注册表 key 用于验证/注入时，只判断存在性，不回显值
+
+## 开机自启与保活（watchdog）
+
+- 脚本：`scripts\start-router-watchdog.ps1`，同时守护路由（15722）和 lean-ctx daemon（4444），每 10 秒检查端口，缺失即拉起。
+- 注册开机任务（任务计划程序，登录时启动）：
+```powershell
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Code\AI\opencode-api-adapter\scripts\start-router-watchdog.ps1"'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName 'opencode-router-watchdog' -Action $action -Trigger $trigger -Settings $settings -Force
+```
+- 取消注册：`Unregister-ScheduledTask -TaskName 'opencode-router-watchdog' -Confirm:$false`
+- 注意：`ExecutionTimeLimit` 必须为 0（无限），否则任务计划程序默认 3 天后会杀掉看门狗。

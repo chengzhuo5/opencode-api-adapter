@@ -1,7 +1,7 @@
-# 一键重启路由：从注册表注入 ERGOU/OPENCODE key 后重启 15722 实例。
+﻿# 一键重启路由：从注册表注入 ERGOU/OPENCODE key 后重启 15722 实例。
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\restart-router.ps1
 $ErrorActionPreference = 'Stop'
-$routerDir = 'C:\Users\cheng\Documents\Codex\2026-08-03\new-chat-2\outputs\codex-router'
+$routerDir = 'C:\Code\AI\opencode-api-adapter'
 $logDir = Join-Path $routerDir 'logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
