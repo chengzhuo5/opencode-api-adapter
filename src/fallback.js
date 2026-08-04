@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { responsesToChatRequest } from './translate/responsesToChat.js';
 import { chatToResponsesObject, translateChatStreamToResponses } from './translate/chatToResponses.js';
 import { normalizeResponsesRequest } from './translate/responsesContext.js';
@@ -387,7 +388,17 @@ async function pipeSseWithNormalization(body, res) {
     }
     flush(buffer);
   } catch (error) {
-    try { res.end(); } catch { /* noop */ }
+    // 上游流中断时补发一个字段完整的 failed 事件，避免 Codex 收到截断的流
+    // 导致 'failed to parse ResponseCompleted: missing field input_tokens'。
+    try {
+      const failed = normalizeResponsesObject({
+        id: 'resp_' + randomUUID().replace(/-/g, ''),
+        status: 'failed',
+        error: { code: 'stream_interrupted', message: String(error?.message || 'upstream stream interrupted').slice(0, 200) }
+      }, 'failed');
+      res.write(sseEncode('response.failed', { type: 'response.failed', response: failed }));
+      res.end();
+    } catch { /* noop */ }
   } finally {
     reader.releaseLock();
   }

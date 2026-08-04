@@ -840,3 +840,25 @@ test('relayUpstream normalizes non-stream response json', async () => {
   assert.equal(parsed.status, 'completed');
 });
 
+test('relayUpstream emits complete response.failed when passthrough stream breaks', async () => {
+  const calls = [];
+  const res = { writeHead: (s, h) => calls.push(['head', s]), write: (c) => calls.push(['write', Buffer.isBuffer(c) ? c.toString() : String(c)]), end: () => calls.push(['end']) };
+  const upstream = new Response(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      controller.enqueue(enc.encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","item_id":"m1","output_index":0,"content_index":0,"delta":"he"}\n\n'));
+      setTimeout(() => controller.error(new Error('upstream dropped')), 0);
+    }
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  await relayUpstream(res, upstream);
+  const written = calls.filter((c) => c[0] === 'write').map((c) => c[1]).join('');
+  const failed = written.match(/event: response\.failed\ndata: (\{.*?\})\n\n/s)?.[1];
+  assert.ok(failed, 'expected response.failed event');
+  const obj = JSON.parse(failed);
+  assert.equal(obj.response.status, 'failed');
+  assert.equal(obj.response.object, 'response');
+  assert.ok(typeof obj.response.input_tokens === 'number');
+  assert.ok(typeof obj.response.output_tokens === 'number');
+  assert.equal(obj.response.error.code, 'stream_interrupted');
+});
+
