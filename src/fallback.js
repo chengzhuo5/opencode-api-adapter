@@ -14,7 +14,7 @@ export function clearUnsupportedCache() {
 }
 
 
-const DEEPSEEK_MODELS = new Set(['deepseek-v4-pro', 'deepseek-v4-flash']);
+export const DEEPSEEK_MODELS = new Set(['deepseek-v4-pro', 'deepseek-v4-flash']);
 const MULTIMODAL_FALLBACK_MODEL = 'gpt-5.6-luna';
 
 function isImagePart(part) {

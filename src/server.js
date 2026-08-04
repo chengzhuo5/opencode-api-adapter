@@ -4,7 +4,7 @@ import { resolveRoute, UnknownModelError } from './routes.js';
 import { sseEncode } from './sse.js';
 import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js';
 import { anthropicToResponsesObject, translateAnthropicStreamToResponses } from './translate/anthropicToResponses.js';
-import { maybeUpgradeModel, minimizeHistoryImages, stripAllImages, truncateHistory, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
+import { maybeUpgradeModel, minimizeHistoryImages, stripAllImages, DEEPSEEK_MODELS, truncateHistory, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
 import { logEvent } from './logger.js';
 import { maybeCompressInput, loadOutput } from './compression.js';
 import { createLeanCtxClient } from './leanCtxClient.js';
@@ -91,7 +91,7 @@ async function forward(res, body, route, config, fetchImpl, compression) {
       endpoint: route.endpoint,
       ...(minimized.removedImages > 0 ? { historical_images_removed: minimized.removedImages } : {})
     });
-  } else {
+  } else if (DEEPSEEK_MODELS.has(upgraded.model)) {
     const stripped = stripAllImages(upgraded.input);
     if (stripped.removedImages > 0) {
       upgraded = { ...upgraded, input: stripped.input };

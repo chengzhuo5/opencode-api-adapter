@@ -712,3 +712,31 @@ test('deepseek request without current image strips historical screenshots befor
   assert.ok(!sent.includes('base64'), 'screenshot base64 must not reach deepseek');
   assert.equal(calls[0].body.input[1].output[0].text, '[image omitted]');
 });
+
+test('vision model direct request keeps images (no strip)', async () => {
+  const calls = [];
+  const img = 'data:image/png;base64,' + 'B'.repeat(1200);
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.6-luna',
+        stream: true,
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'describe' }, { type: 'input_image', image_url: img }] }]
+      })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(calls.length, 1);
+  assert.ok(JSON.stringify(calls[0].body.input).includes('base64'), 'vision model request must keep the image');
+  assert.equal(calls[0].body.input[0].content[1].type, 'input_image');
+});
