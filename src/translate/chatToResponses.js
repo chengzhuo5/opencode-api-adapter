@@ -75,6 +75,8 @@ export async function translateChatStreamToResponses(body, requestModel, writeEv
       continue;
     }
     const delta = chunk.choices?.[0]?.delta || {};
+    // OpenAI chat 流式在最后一个 chunk 携带 usage；透传给客户端用于上下文统计
+    if (chunk.usage && !response.usage) response.usage = chunk.usage;
     if (delta.reasoning_content) {
       if (!reasoningItem) {
         reasoningItem = {

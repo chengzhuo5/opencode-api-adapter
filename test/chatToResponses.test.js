@@ -109,3 +109,16 @@ test('emits response.failed instead of silent stream break', async () => {
   assert.equal(events[events.length - 1].event, 'response.failed');
 });
 
+test('carries streamed usage into response.completed', async () => {
+  const body = streamFromChunks([
+    'data: {"choices":[{"delta":{"role":"assistant","content":"he"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n',
+    'data: {"choices":[],"usage":{"prompt_tokens":123,"completion_tokens":2,"total_tokens":125}}\n\n',
+    'data: [DONE]\n\n'
+  ]);
+  const events = [];
+  await translateChatStreamToResponses(body, 'deepseek-v4-flash', (event, data) => events.push({ event, data }));
+  const completed = events.find((item) => item.event === 'response.completed');
+  assert.ok(completed, 'expected response.completed');
+  assert.deepEqual(completed.data.response.usage, { prompt_tokens: 123, completion_tokens: 2, total_tokens: 125 });
+});

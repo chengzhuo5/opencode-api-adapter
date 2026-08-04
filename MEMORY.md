@@ -49,6 +49,14 @@
 
 **注意**：`scripts/start-router-watchdog.ps1` 是另一台机器的路径（C:\Code\AI、用户 29302），本机需适配后使用。
 
+## 2026-08-04：Codex 上下文显示长度不更新
+
+**现象**：走路由后 Codex 客户端显示的上下文长度一直不变。
+
+**根因**：deepseek 走 opencode **chat 流式**（responses 不支持），`translateChatStreamToResponses` 只解析 `delta`、忽略流式最后一个 chunk 的 `usage` 字段 → `response.completed` 无 usage → 客户端（靠 usage 更新上下文显示）拿不到数据。
+
+**修复**：流式循环里解析 `chunk.usage` 附加到 response，随 `response.completed` 透传。注意：显示的是压缩/截断后实际发给上游的 token 数，比 Codex 本地上下文小属正常。
+
 ## 运维注意
 
 - **改 key 后必须重启路由**：进程启动时固化环境变量；`scripts/restart-router.ps1` 会从注册表注入
