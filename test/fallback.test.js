@@ -20,6 +20,17 @@ test('hasImageInput returns false without images', () => {
   assert.equal(hasImageInput({}), false);
 });
 
+test('hasImageInput detects images inside function_call_output', () => {
+  const body = {
+    input: [
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
+      { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: 'data:image/png;base64,AAAA' }] },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what is this?' }] }
+    ]
+  };
+  assert.equal(hasImageInput(body), true, 'image inside function_call_output.output must be detected');
+});
+
 test('hasImageInput ignores images from older history turns', () => {
   const body = {
     input: [
@@ -514,6 +525,56 @@ test('multimodal upgrade strips historical file_id images so ergou is not hit wi
   assert.ok(sent.every((item) => !JSON.stringify(item).includes('file_old')), 'historical file_id must not reach ergou');
   assert.equal(sent[0].content[1].text, '[image omitted]');
   assert.equal(sent[2].content[1].type, 'input_image', 'current image kept');
+});
+
+test('minimizeHistoryImages strips historical images inside function_call_output', () => {
+  const img = 'data:image/png;base64,AAAA';
+  const input = [
+    { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
+    { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: img }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first' }] },
+    { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'view_image', arguments: '{}' },
+    { type: 'function_call_output', id: 'fco_2', call_id: 'call_2', output: [{ type: 'input_image', image_url: img }, { type: 'input_text', text: 'note' }] }
+  ];
+  const { input: out, removedImages } = minimizeHistoryImages(input);
+  assert.equal(removedImages, 1, 'historical fco image should be stripped');
+  assert.equal(out[1].output[0].type, 'input_text', 'historical fco image becomes placeholder');
+  assert.equal(out[1].output[0].text, '[image omitted]');
+  assert.deepEqual(out[4], input[4], 'latest fco keeps its image');
+  assert.equal(out[4].output[0].type, 'input_image');
+});
+
+test('deepseek request with image in function_call_output upgrades to luna and hits ergou', async () => {
+  const calls = [];
+  const img = 'data:image/png;base64,AAAA';
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: true,
+        input: [
+          { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
+          { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: img }] },
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what is this?' }] }
+        ]
+      })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://ergouapi.com/v1/responses', 'fco image must upgrade deepseek to luna and hit ergou');
+  assert.equal(calls[0].body.model, 'gpt-5.6-luna');
+  assert.equal(calls[0].body.input[1].output[0].type, 'input_image', 'current fco image is preserved');
 });
 
 test('truncateHistory keeps latest N items and avoids orphan function_call_output at head', () => {

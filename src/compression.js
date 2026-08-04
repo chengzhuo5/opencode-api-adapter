@@ -95,6 +95,11 @@ export async function compressInput(input, ctx) {
       out.push(item);
       continue;
     }
+    if (Array.isArray(item.output)) {
+      // 多模态工具输出（图片块数组）：原样透传，不压缩，避免破坏图片内容
+      out.push(item);
+      continue;
+    }
     const fingerprint = outputFingerprint(item);
     const charsBefore = JSON.stringify(item).length;
     const tokensBefore = estimateTokens(JSON.stringify(item));

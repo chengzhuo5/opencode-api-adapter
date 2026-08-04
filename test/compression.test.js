@@ -72,6 +72,22 @@ test('compressInput compresses every function_call_output and keeps all other it
   assert.equal(ctx.meta.overall.outputs_cached, 0);
 });
 
+test('compressInput keeps array outputs (multimodal images) untouched', async () => {
+  let calls = 0;
+  const client = { compress: async () => { calls++; return { messages: [{ role: 'user', content: 'tiny' }], stats: {} }; } };
+  const ctx = { client, model: 'x', storeDir: null, cache: new Map(), log: () => {} };
+  const imageOutput = [{ type: 'input_image', image_url: 'data:image/png;base64,AAAA' }];
+  const input = [
+    { type: 'function_call_output', id: 'fco_img', call_id: 'c1', output: imageOutput },
+    { type: 'function_call_output', id: 'fco_txt', call_id: 'c2', output: 'plain text output' }
+  ];
+  const out = await compressInput(input, ctx);
+  assert.equal(calls, 1, 'array output must not be sent to the compressor');
+  assert.equal(out[0], input[0], 'array output must pass through untouched');
+  assert.equal(out[0].output, imageOutput);
+  assert.equal(out[1].output, 'tiny');
+});
+
 test('compressInput caches repeated outputs and only compresses new ones', async () => {
   let calls = 0;
   const client = { compress: async () => { calls++; return { messages: [{ role: 'user', content: `AC${calls}` }], stats: {} }; } };

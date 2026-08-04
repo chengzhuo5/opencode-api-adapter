@@ -17,6 +17,30 @@ export function clearUnsupportedCache() {
 const DEEPSEEK_MODELS = new Set(['deepseek-v4-pro', 'deepseek-v4-flash']);
 const MULTIMODAL_FALLBACK_MODEL = 'gpt-5.6-luna';
 
+function isImagePart(part) {
+  return part
+    && typeof part === 'object'
+    && (part.type === 'input_image'
+      || part.type === 'image_url'
+      || Object.hasOwn(part, 'image_url')
+      || Object.hasOwn(part, 'file_id'));
+}
+
+function itemImages(item) {
+  const images = [];
+  if (!item || typeof item !== 'object') return images;
+  if (item.type === 'function_call_output') {
+    if (Array.isArray(item.output)) {
+      for (const part of item.output) if (isImagePart(part)) images.push(part);
+    } else if (typeof item.output === 'string' && item.output.includes('data:image/')) {
+      images.push({ type: 'input_image', image_url: item.output });
+    }
+  } else if (Array.isArray(item.content)) {
+    for (const part of item.content) if (isImagePart(part)) images.push(part);
+  }
+  return images;
+}
+
 export function hasImageInput(body) {
   const input = body?.input;
   if (!Array.isArray(input)) return false;
@@ -25,28 +49,18 @@ export function hasImageInput(body) {
     && typeof item === 'object'
     && (item.role === 'user' || (item.type === 'message' && item.role === 'user'))
   ));
-  const content = latestUser?.content;
-  if (!Array.isArray(content)) return false;
-  return content.some((part) => {
-    if (!part || typeof part !== 'object') return false;
-    return part.type === 'input_image'
-      || part.type === 'image_url'
-      || Object.hasOwn(part, 'image_url')
-      || Object.hasOwn(part, 'file_id');
-  });
+  if (itemImages(latestUser).length > 0) return true;
+  const latestFco = [...input].reverse().find((item) => (
+    item && typeof item === 'object' && item.type === 'function_call_output'
+  ));
+  return itemImages(latestFco).length > 0;
 }
 
 function hasFileIdInput(body) {
   const input = Array.isArray(body?.input) ? body.input : [];
   return input.some((item) => {
     if (!item || typeof item !== 'object') return false;
-    const content = Array.isArray(item.content) ? item.content : [];
-    return content.some((part) => (
-      part
-      && typeof part === 'object'
-      && (part.type === 'input_image' || part.type === 'image_url')
-      && Object.hasOwn(part, 'file_id')
-    ));
+    return itemImages(item).some((part) => Object.hasOwn(part, 'file_id'));
   });
 }
 
@@ -59,8 +73,7 @@ export function minimizeHistoryImages(input) {
   const items = Array.isArray(input) ? input : [];
   let lastImageIndex = -1;
   for (let i = items.length - 1; i >= 0; i--) {
-    const content = Array.isArray(items[i]?.content) ? items[i].content : [];
-    if (content.some((part) => part && typeof part === 'object' && (part.type === 'input_image' || part.type === 'image_url'))) {
+    if (itemImages(items[i]).length > 0) {
       lastImageIndex = i;
       break;
     }
@@ -68,15 +81,29 @@ export function minimizeHistoryImages(input) {
   if (lastImageIndex < 0) return { input, removedImages: 0 };
   let removedImages = 0;
   const out = items.map((item, index) => {
-    if (index === lastImageIndex || !Array.isArray(item?.content)) return item;
-    const content = item.content.map((part) => {
-      if (part && typeof part === 'object' && (part.type === 'input_image' || part.type === 'image_url')) {
-        removedImages += 1;
-        return { type: 'input_text', text: '[image omitted]' };
-      }
-      return part;
-    });
-    return { ...item, content };
+    if (index === lastImageIndex) return item;
+    if (!item || typeof item !== 'object') return item;
+    if (item.type === 'function_call_output' && Array.isArray(item.output)) {
+      const output = item.output.map((part) => {
+        if (isImagePart(part)) {
+          removedImages += 1;
+          return { type: 'input_text', text: '[image omitted]' };
+        }
+        return part;
+      });
+      return { ...item, output };
+    }
+    if (Array.isArray(item.content)) {
+      const content = item.content.map((part) => {
+        if (isImagePart(part)) {
+          removedImages += 1;
+          return { type: 'input_text', text: '[image omitted]' };
+        }
+        return part;
+      });
+      return { ...item, content };
+    }
+    return item;
   });
   return { input: out, removedImages };
 }
