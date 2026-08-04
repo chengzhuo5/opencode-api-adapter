@@ -36,6 +36,20 @@ export function hasImageInput(body) {
   });
 }
 
+function hasFileIdInput(body) {
+  const input = Array.isArray(body?.input) ? body.input : [];
+  return input.some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const content = Array.isArray(item.content) ? item.content : [];
+    return content.some((part) => (
+      part
+      && typeof part === 'object'
+      && (part.type === 'input_image' || part.type === 'image_url')
+      && Object.hasOwn(part, 'file_id')
+    ));
+  });
+}
+
 export function maybeUpgradeModel(body) {
   if (!body || !DEEPSEEK_MODELS.has(body.model)) return body;
   if (!hasImageInput(body)) return body;
@@ -59,10 +73,19 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
     await forwardChat(res, body, config, fetchImpl, displayModel);
     return;
   }
-  const providers = [
+  let providers = [
     { endpoint: route.endpoint, apiKey: route.apiKey ?? config.apiKey },
     ...(route.fallbackEndpoint ? [{ endpoint: route.fallbackEndpoint, apiKey: route.fallbackApiKey ?? config.apiKey }] : [])
   ];
+  if (hasFileIdInput(body) && providers.length > 1) {
+    logEvent(config, {
+      event: 'file_id_compat',
+      model: displayModel,
+      reason: 'file_id_image_routes_to_opencode',
+      endpoint: providers[1].endpoint
+    });
+    providers = [providers[1]];
+  }
   const requestBody = normalizeResponsesRequest(body);
   const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
   for (let i = 0; i < providers.length; i++) {

@@ -436,3 +436,29 @@ test('logs include full endpoint URLs on fallback and multimodal events', async 
   const result = events.find((e) => e.event === 'api_fallback_result' && e.success === true);
   assert.equal(result.fallback_url, 'https://opencode.example/v1/chat/completions', 'api_fallback_result should carry the chat full URL');
 });
+
+test('file_id image requests skip custom provider and go to opencode', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, auth: init.headers.authorization });
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gpt-5.6-luna',
+        stream: true,
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }, { type: 'input_image', file_id: 'file_abc' }] }]
+      })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.deepEqual(calls.map((c) => c.url), ['https://x/v1/responses'], 'file_id image must route to opencode, not ergou');
+  assert.equal(calls[0].auth, 'Bearer k');
+});
