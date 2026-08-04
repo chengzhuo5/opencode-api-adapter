@@ -38,7 +38,9 @@ function normalizeResponsesItem(item) {
       // and rewrite output parts as input parts when replaying across providers.
       role: role === 'assistant' ? 'user' : role
     };
-    copyIfPresent(message, item, 'id');
+    // Drop stored item ids when replaying: legacy Codex threads carry
+    // `resp_..._msg` style ids that third-party endpoints reject (they expect
+    // `msg_`/`fc_`/`fco_` prefixes), and a full replay never references them.
     if (item.content !== undefined) message.content = normalizeContent(item.content);
     return message;
   }
@@ -50,7 +52,6 @@ function normalizeResponsesItem(item) {
       name: normalizeToolName(item.name || ''),
       arguments: item.arguments || ''
     };
-    copyIfPresent(call, item, 'id');
     return call;
   }
 
@@ -60,7 +61,6 @@ function normalizeResponsesItem(item) {
       call_id: item.call_id,
       output: item.output
     };
-    copyIfPresent(output, item, 'id');
     return output;
   }
 
@@ -74,7 +74,6 @@ function normalizeResponsesItem(item) {
       name: normalizeToolName(item.name || ''),
       arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.input ?? {})
     };
-    copyIfPresent(call, item, 'id');
     return call;
   }
 
@@ -84,7 +83,6 @@ function normalizeResponsesItem(item) {
       call_id: item.call_id,
       output: item.output
     };
-    copyIfPresent(output, item, 'id');
     return output;
   }
 
@@ -106,10 +104,6 @@ function normalizeContent(content) {
     }
     return stripInternalFields(part);
   });
-}
-
-function copyIfPresent(target, source, key) {
-  if (source[key] !== undefined) target[key] = stripInternalFields(source[key]);
 }
 
 function stripInternalFields(value) {

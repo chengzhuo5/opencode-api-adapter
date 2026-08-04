@@ -9,7 +9,7 @@
 - Chat Completions JSON and SSE responses are converted back to the Responses format.
 - MiniMax/Qwen Anthropic Messages routing remains independent and is not included in Responses→Chat fallback.
 - DeepSeek V4 Pro/Flash requests whose latest user message contains `input_image`, `image_url`, or `file_id` are automatically routed to `gpt-5.6-luna`; images in older history turns do not trigger the fallback.
-- Cross-protocol history normalization preserves tool calls (including legacy `custom_tool_call`/`custom_tool_call_output` items) and reasoning, removes internal fields, repairs duplicated historical tool names, and re-pairs interrupted or interleaved tool rounds so every `tool_calls` message is answered before the next role.
+- Cross-protocol history normalization preserves tool calls (including legacy `custom_tool_call`/`custom_tool_call_output` items) and reasoning, removes internal fields, repairs duplicated historical tool names, and re-pairs interrupted or interleaved tool rounds so every `tool_calls` message is answered before the next role. Stored item ids are dropped on replay because legacy `resp_..._msg` prefixed ids are rejected by some upstreams.
 - Structured console logs report multimodal and API fallback events without logging API keys, full prompts, or image data.
 - Usable as a CLI or imported as a Node HTTP server.
 

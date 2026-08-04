@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages, truncateHistory } from '../src/fallback.js';
+import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages, truncateHistory, relayError } from '../src/fallback.js';
 
 test('hasImageInput detects input_image blocks', () => {
   const body = { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }, { type: 'input_image', image_url: 'https://x/1.png' }] }] };
@@ -650,3 +650,13 @@ test('custom provider request truncates history to maxHistoryMessages', async ()
   assert.equal(calls[0].body.input.length, 5, 'history should be truncated to 5 items');
   assert.equal(calls[0].body.input[0].content[0].text, 'm10');
 });
+
+test('relayError adds readable message when upstream error body is empty', async () => {
+  const calls = [];
+  const res = { writeHead: (s, h) => calls.push(['head', s, h]), end: (b) => calls.push(['end', b]) };
+  const upstream = new Response(JSON.stringify({ error: { message: '' } }), { status: 403, statusText: 'Forbidden', headers: { 'content-type': 'application/json' } });
+  await relayError(res, upstream);
+  assert.equal(calls[0][1], 403);
+  assert.equal(JSON.parse(calls[1][1]).error.message, 'upstream 403 Forbidden');
+});
+

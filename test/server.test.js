@@ -185,8 +185,8 @@ test('responses passthrough normalizes cross-protocol history items', async () =
 
   assert.equal(forwarded.previous_response_id, undefined);
   assert.deepEqual(forwarded.input, [
-    { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'sh', arguments: '{}' },
-    { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: 'ok' }
+    { type: 'function_call', call_id: 'call_1', name: 'sh', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'call_1', output: 'ok' }
   ]);
 });
 
@@ -341,8 +341,8 @@ test('responses passthrough flattens assistant history for upstream', async () =
   });
 
   assert.deepEqual(forwarded.input, [
-    { type: 'message', role: 'user', id: 'u1', content: [{ type: 'input_text', text: 'run it' }] },
-    { type: 'message', role: 'user', id: 'a1', content: [{ type: 'input_text', text: 'done' }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'run it' }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'done' }] },
     { type: 'function_call', call_id: 'call_1', name: 'sh', arguments: '{}' },
     { type: 'function_call_output', call_id: 'call_1', output: 'ok' }
   ]);
@@ -372,8 +372,20 @@ test('normalizeResponsesRequest maps custom tool items to function items', () =>
     ]
   });
   assert.deepEqual(request.input, [
-    { type: 'function_call', id: 'ctc_1', call_id: 'call_1', name: 'apply_patch', arguments: '{"patch":"x"}' },
-    { type: 'function_call_output', id: 'ctco_1', call_id: 'call_1', output: 'ok' }
+    { type: 'function_call', call_id: 'call_1', name: 'apply_patch', arguments: '{"patch":"x"}' },
+    { type: 'function_call_output', call_id: 'call_1', output: 'ok' }
   ]);
+});
+
+test('normalizeResponsesRequest strips legacy item ids before forwarding', () => {
+  const request = normalizeResponsesRequest({
+    model: 'gpt-5.6-luna',
+    input: [
+      { type: 'message', role: 'user', id: 'resp_abc_msg', content: [{ type: 'input_text', text: 'hi' }] },
+      { type: 'function_call', id: 'resp_abc_fc', call_id: 'call_1', name: 'sh', arguments: '{}' },
+      { type: 'function_call_output', id: 'resp_abc_fco', call_id: 'call_1', output: 'ok' }
+    ]
+  });
+  assert.equal(request.input.some((item) => Object.hasOwn(item, 'id')), false);
 });
 

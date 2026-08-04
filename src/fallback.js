@@ -273,6 +273,9 @@ export async function relayError(res, upstream) {
   const text = await upstream.text();
   let parsed;
   try { parsed = JSON.parse(text); } catch { parsed = { error: { message: text.slice(0, 500) } }; }
+  if (!parsed?.error?.message) {
+    parsed = { ...(parsed || {}), error: { ...(parsed?.error || {}), message: `upstream ${upstream.status} ${upstream.statusText || ''}`.trim() } };
+  }
   sendJson(res, upstream.status, parsed);
 }
 
