@@ -31,8 +31,8 @@ export function resolveRoute(config, model) {
   const entry = config.models?.[model];
   const upstream = entry?.upstream ?? DEFAULT_MODEL_ROUTES[model];
   if (!upstream) throw new UnknownModelError(model);
-  const effective = upstream === 'messages' ? 'messages' : 'responses';
-  const suffix = effective === 'messages' ? 'messages' : 'responses';
+  const effective = upstream === 'messages' ? 'messages' : upstream === 'chat' ? 'chat' : 'responses';
+  const suffix = effective === 'messages' ? 'messages' : effective === 'chat' ? 'chat/completions' : 'responses';
   const toBases = (value) => (Array.isArray(value) ? value : [value]).filter((v) => (
     (typeof v === 'string' && v) || (v && typeof v === 'object' && typeof v.url === 'string' && v.url)
   ));

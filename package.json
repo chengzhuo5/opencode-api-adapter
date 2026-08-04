@@ -47,7 +47,7 @@
   },
   "scripts": {
     "start": "node src/main.js",
-    "test": "node --test test/*.test.js",
+    "test": "node --test --test-force-exit test/*.test.js",
     "smoke": "node scripts/smoke.mjs",
     "switch:gpt-ds-gpt-ds": "node scripts/switch-gpt-deepseek-gpt-deepseek.mjs --mock",
     "switch:ds-gpt-ds-gpt": "node scripts/switch-deepseek-gpt-deepseek-gpt.mjs --mock",

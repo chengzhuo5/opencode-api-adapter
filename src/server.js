@@ -3,6 +3,8 @@ import path from 'node:path';
 import { resolveRoute, UnknownModelError } from './routes.js';
 import { sseEncode } from './sse.js';
 import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js';
+import { responsesToChatRequest } from './translate/responsesToChat.js';
+import { chatToResponsesObject, translateChatStreamToResponses } from './translate/chatToResponses.js';
 import { anthropicToResponsesObject, translateAnthropicStreamToResponses } from './translate/anthropicToResponses.js';
 import { replayResponsesAsSse } from './translate/responsesReplay.js';
 import { maybeUpgradeModel, minimizeHistoryImages, stripAllImages, DEEPSEEK_MODELS, truncateHistory, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
@@ -137,7 +139,40 @@ async function forward(res, body, route, config, fetchImpl, compression) {
     }
   }
   const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache, compression?.safety, compression?.stats);
+  if (route.upstream === 'chat') {
+    await forwardChatRoute(res, compressed, route, config, fetchImpl, body.model, { replay });
+    return;
+  }
   await forwardWithFallback(res, compressed, route, config, fetchImpl, body.model, { replay });
+}
+
+async function forwardChatRoute(res, body, route, config, fetchImpl, displayModel, options = {}) {
+  const effective = options.replay ? { ...body, stream: false } : body;
+  const headers = {
+    'content-type': 'application/json',
+    authorization: `Bearer ${route.apiKey ?? config.apiKey}`
+  };
+  const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
+  const requestBody = responsesToChatRequest(effective);
+  const upstream = await fetchImpl(route.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
+  if (!upstream.ok) {
+    await relayError(res, upstream);
+    return;
+  }
+  if (effective.stream) {
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+    await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => res.write(sseEncode(event, data)));
+    res.end();
+    return;
+  }
+  const chat = await upstream.json();
+  if (options.replay) {
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+    replayResponsesAsSse(chatToResponsesObject(chat, displayModel), (event, data) => res.write(sseEncode(event, data)));
+    res.end();
+    return;
+  }
+  sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
 }
 
 async function readJson(req) {

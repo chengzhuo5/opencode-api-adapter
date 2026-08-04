@@ -16,11 +16,18 @@ test('routes deepseek to responses with chat fallback', () => {
   assert.equal(route.endpoint, 'https://opencode.ai/zen/go/v1/responses');
 });
 
-test('config chat override is normalized to responses', () => {
+test('config chat override routes to chat completions', () => {
   const cfg = { apiBaseUrl: 'https://x/v1', models: { 'deepseek-v4-flash': { upstream: 'chat' } } };
   const route = resolveRoute(cfg, 'deepseek-v4-flash');
+  assert.equal(route.upstream, 'chat');
+  assert.equal(route.endpoint, 'https://x/v1/chat/completions');
+});
+
+test('routes deepseek custom endpoint to official responses', () => {
+  const cfg = { apiBaseUrl: 'https://opencode.ai/zen/go/v1', models: { 'deepseek-v4-flash': { upstream: 'responses', endpoint: 'https://api.deepseek.com/v1' } } };
+  const route = resolveRoute(cfg, 'deepseek-v4-flash');
   assert.equal(route.upstream, 'responses');
-  assert.equal(route.endpoint, 'https://x/v1/responses');
+  assert.equal(route.endpoint, 'https://api.deepseek.com/v1/responses');
 });
 
 test('routes minimax to messages', () => {

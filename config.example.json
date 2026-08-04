@@ -20,6 +20,11 @@
       ],
       "apiKeyEnv": "ERGOUAPI_API_KEY",
       "maxHistoryMessages": 10
+    },
+    "deepseek-v4-flash": {
+      "upstream": "responses",
+      "endpoint": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
     }
   },
   "compress": {
