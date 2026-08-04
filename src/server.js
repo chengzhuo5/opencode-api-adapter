@@ -4,7 +4,7 @@ import { resolveRoute, UnknownModelError } from './routes.js';
 import { sseEncode } from './sse.js';
 import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js';
 import { anthropicToResponsesObject, translateAnthropicStreamToResponses } from './translate/anthropicToResponses.js';
-import { maybeUpgradeModel, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
+import { maybeUpgradeModel, minimizeHistoryImages, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
 import { logEvent } from './logger.js';
 import { maybeCompressInput, loadOutput } from './compression.js';
 import { createLeanCtxClient } from './leanCtxClient.js';
@@ -79,14 +79,17 @@ async function forward(res, body, route, config, fetchImpl, compression) {
     }
     return;
   }
-  const upgraded = maybeUpgradeModel(body);
+  let upgraded = maybeUpgradeModel(body);
   if (upgraded !== body) {
+    const minimized = minimizeHistoryImages(upgraded.input);
+    upgraded = { ...upgraded, input: minimized.input };
     logEvent(config, {
       event: 'multimodal_fallback',
       model: body.model,
       fallback_model: upgraded.model,
       reason: 'image_input',
-      endpoint: route.endpoint
+      endpoint: route.endpoint,
+      ...(minimized.removedImages > 0 ? { historical_images_removed: minimized.removedImages } : {})
     });
   }
   const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache, compression?.safety, compression?.stats);

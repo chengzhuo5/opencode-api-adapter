@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasImageInput, maybeUpgradeModel } from '../src/fallback.js';
+import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages } from '../src/fallback.js';
 
 test('hasImageInput detects input_image blocks', () => {
   const body = { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }, { type: 'input_image', image_url: 'https://x/1.png' }] }] };
@@ -461,4 +461,57 @@ test('file_id image requests skip custom provider and go to opencode', async () 
   });
   assert.deepEqual(calls.map((c) => c.url), ['https://x/v1/responses'], 'file_id image must route to opencode, not ergou');
   assert.equal(calls[0].auth, 'Bearer k');
+});
+
+test('minimizeHistoryImages keeps latest image and strips historical ones', () => {
+  const img = 'data:image/png;base64,AAAA';
+  const input = [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first' }, { type: 'input_image', image_url: img }] },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok', annotations: [] }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'second' }, { type: 'input_image', file_id: 'file_old' }] },
+    { type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'x' },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'third' }, { type: 'input_image', image_url: img }] }
+  ];
+  const { input: out, removedImages } = minimizeHistoryImages(input);
+  assert.equal(removedImages, 2, 'historical images should be stripped');
+  assert.equal(out[0].content[1].type, 'input_text', 'historical image becomes placeholder text');
+  assert.equal(out[0].content[1].text, '[image omitted]');
+  assert.equal(out[2].content[1].type, 'input_text', 'file_id image in history is stripped too');
+  assert.deepEqual(out[4], input[4], 'latest user message keeps its image untouched');
+  assert.equal(out[3], input[3], 'non-message items pass through');
+});
+
+test('multimodal upgrade strips historical file_id images so ergou is not hit with them', async () => {
+  const calls = [];
+  const img = 'data:image/png;base64,AAAA';
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: true,
+        input: [
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first' }, { type: 'input_image', file_id: 'file_old' }] },
+          { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok', annotations: [] }] },
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what is this' }, { type: 'input_image', image_url: img }] }
+        ]
+      })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://ergouapi.com/v1/responses', 'current data-url image should still go to ergou');
+  const sent = calls[0].body.input;
+  assert.ok(sent.every((item) => !JSON.stringify(item).includes('file_old')), 'historical file_id must not reach ergou');
+  assert.equal(sent[0].content[1].text, '[image omitted]');
+  assert.equal(sent[2].content[1].type, 'input_image', 'current image kept');
 });

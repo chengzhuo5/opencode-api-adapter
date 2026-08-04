@@ -50,6 +50,37 @@ function hasFileIdInput(body) {
   });
 }
 
+/**
+ * 多模态降级优化：只保留最后一条用户消息中的图片（当前要识别的图），
+ * 历史消息中的图片替换为占位文本，避免历史图片（尤其 file_id）重复消耗 token 或触发上游 403。
+ * 文本历史原样保留以维持对话上下文。
+ */
+export function minimizeHistoryImages(input) {
+  const items = Array.isArray(input) ? input : [];
+  let lastImageIndex = -1;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const content = Array.isArray(items[i]?.content) ? items[i].content : [];
+    if (content.some((part) => part && typeof part === 'object' && (part.type === 'input_image' || part.type === 'image_url'))) {
+      lastImageIndex = i;
+      break;
+    }
+  }
+  if (lastImageIndex < 0) return { input, removedImages: 0 };
+  let removedImages = 0;
+  const out = items.map((item, index) => {
+    if (index === lastImageIndex || !Array.isArray(item?.content)) return item;
+    const content = item.content.map((part) => {
+      if (part && typeof part === 'object' && (part.type === 'input_image' || part.type === 'image_url')) {
+        removedImages += 1;
+        return { type: 'input_text', text: '[image omitted]' };
+      }
+      return part;
+    });
+    return { ...item, content };
+  });
+  return { input: out, removedImages };
+}
+
 export function maybeUpgradeModel(body) {
   if (!body || !DEEPSEEK_MODELS.has(body.model)) return body;
   if (!hasImageInput(body)) return body;
