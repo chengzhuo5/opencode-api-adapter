@@ -8,7 +8,7 @@ const dataUrl = `data:${mime};base64,${readFileSync(imagePath).toString('base64'
 async function send(model, label) {
   const body = {
     model,
-    stream: false,
+    stream: true,
     input: [{
       type: 'message',
       role: 'user',
@@ -28,7 +28,10 @@ async function send(model, label) {
     const text = await res.text();
     console.log(`--- ${label} ---`);
     console.log(`status=${res.status} ms=${Date.now() - started} bytes=${text.length}`);
-    console.log(text.slice(0, 600).replace(/\n/g, '\\n'));
+    const events = [...text.matchAll(/"type":"([a-z_.]+)"/g)].map((m) => m[1]);
+    console.log('event types:', [...new Set(events)].join(', '));
+    const delta = text.match(/"delta":"([^"]*)"/)?.[1] || text.match(/"text":"([^"]*)"/)?.[1] || '';
+    console.log('first text:', delta.slice(0, 120));
   } catch (error) {
     console.log(`--- ${label} --- NETWORK_ERROR: ${error.message}`);
   }
