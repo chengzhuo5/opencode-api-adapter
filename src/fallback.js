@@ -3,6 +3,7 @@ import { responsesToChatRequest } from './translate/responsesToChat.js';
 import { chatToResponsesObject, translateChatStreamToResponses } from './translate/chatToResponses.js';
 import { normalizeResponsesRequest } from './translate/responsesContext.js';
 import { parseSseEvent, sseEncode } from './sse.js';
+import { replayResponsesAsSse } from './translate/responsesReplay.js';
 import { logEvent } from './logger.js';
 
 const unsupportedResponses = new Set();
@@ -169,7 +170,7 @@ export function maybeUpgradeModel(body) {
 }
 
 
-export async function forwardWithFallback(res, body, route, config, fetchImpl, displayModel = body.model) {
+export async function forwardWithFallback(res, body, route, config, fetchImpl, displayModel = body.model, options = {}) {
   if (unsupportedResponses.has(body.model)) {
     if (!unsupportedNotified.has(body.model)) {
       unsupportedNotified.add(body.model);
@@ -182,7 +183,7 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
         fallback_endpoint: 'chat/completions'
       });
     }
-    await forwardChat(res, body, config, fetchImpl, displayModel);
+    await forwardChat(res, body, config, fetchImpl, displayModel, options);
     return;
   }
   let providers = Array.isArray(route.providers) && route.providers.length
@@ -220,13 +221,19 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
         fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
       });
       if (lastProvider) {
-        await forwardChat(res, body, config, fetchImpl, displayModel);
+        await forwardChat(res, body, config, fetchImpl, displayModel, options);
         return;
       }
       continue;
     }
     if (upstream.ok) {
-      await relayUpstream(res, upstream);
+      if (options.replay) {
+        await relayNonStreamingResponse(res, upstream, displayModel);
+      } else if (options.streamRetryFallback ?? true) {
+        await relayUpstreamSmart(res, upstream, body, config, fetchImpl, displayModel, provider);
+      } else {
+        await relayUpstream(res, upstream);
+      }
       return;
     }
     if (lastProvider && UNSUPPORTED_STATUSES.has(upstream.status)) {
@@ -242,13 +249,13 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
       fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
     });
     if (lastProvider) {
-      await forwardChat(res, body, config, fetchImpl, displayModel);
+      await forwardChat(res, body, config, fetchImpl, displayModel, options);
       return;
     }
   }
 }
 
-async function forwardChat(res, body, config, fetchImpl, displayModel) {
+async function forwardChat(res, body, config, fetchImpl, displayModel, options = {}) {
   const chatBody = responsesToChatRequest(body);
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
   const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
@@ -297,6 +304,12 @@ async function forwardChat(res, body, config, fetchImpl, displayModel) {
     return;
   }
   const chat = await upstream.json();
+  if (options.replay) {
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+    replayResponsesAsSse(chatToResponsesObject(chat, displayModel), (event, data) => res.write(sseEncode(event, data)));
+    res.end();
+    return;
+  }
   sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
 }
 
@@ -327,6 +340,82 @@ export function normalizeResponsesObject(resp, fallbackStatus) {
   return out;
 }
 
+async function relayNonStreamingResponse(res, upstream, displayModel) {
+  const text = await upstream.text();
+  let response;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object' && (parsed.object === 'response' || (parsed.id && parsed.model))) {
+      response = normalizeResponsesObject(parsed, 'completed');
+    } else {
+      response = normalizeResponsesObject({ id: 'resp_' + randomUUID().replace(/-/g, ''), status: 'failed', error: { code: 'upstream_response', message: 'upstream returned a non-response payload' } }, 'failed');
+    }
+  } catch {
+    sendJson(res, 502, { error: { message: `upstream returned non-JSON response: ${text.slice(0, 200)}` } });
+    return;
+  }
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+  replayResponsesAsSse(response, (event, data) => res.write(sseEncode(event, data)));
+  res.end();
+}
+
+/**
+ * 方案 3（流式优先 + 断流自动降级）：先尝试流式转发；若上游流在首个事件前
+ * 就断开（此时尚未向 Codex 写任何字节），自动改用非流式请求重试，拿到完整
+ * JSON 后回放为 SSE。流开始转发后中断则补发完整 failed（由
+ * pipeSseWithNormalization 处理）。
+ */
+export async function relayUpstreamSmart(res, upstream, body, config, fetchImpl, displayModel, provider) {
+  const contentType = upstream.headers.get('content-type') || 'application/json';
+  if (!contentType.includes('text/event-stream')) {
+    await relayUpstream(res, upstream);
+    return;
+  }
+  const reader = upstream.body.getReader();
+  const decoder = new TextDecoder();
+  let first;
+  try {
+    const { done, value } = await reader.read();
+    first = done ? '' : decoder.decode(value, { stream: true });
+  } catch {
+    first = null;
+  }
+  if (first === null || first.trim() === '') {
+    try { reader.cancel?.(); } catch { /* noop */ }
+    await retryNonStreaming(res, body, config, fetchImpl, displayModel, provider);
+    return;
+  }
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+  await pipeSseWithNormalization(upstream.body, res, { reader, decoder, buffer: first });
+  res.end();
+}
+
+async function retryNonStreaming(res, body, config, fetchImpl, displayModel, provider) {
+  logEvent(config, {
+    event: 'stream_retry_nonstreaming',
+    model: displayModel,
+    reason: 'first_event_timeout',
+    endpoint: provider.endpoint
+  });
+  const headers = { 'content-type': 'application/json', authorization: `Bearer ${provider.apiKey}` };
+  const retryBody = { ...body, stream: false };
+  try {
+    const retry = await fetchImpl(provider.endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(normalizeResponsesRequest(retryBody)),
+      signal: AbortSignal.timeout(config.timeouts?.requestMs || 600000)
+    });
+    if (retry.ok) {
+      await relayNonStreamingResponse(res, retry, displayModel);
+      return;
+    }
+    await relayError(res, retry);
+  } catch (error) {
+    sendJson(res, 502, { error: { message: `streaming failed and non-streaming retry failed: ${error?.message || error}` } });
+  }
+}
+
 export async function relayUpstream(res, upstream) {
   if (!upstream.ok) {
     await relayError(res, upstream);
@@ -352,11 +441,11 @@ export async function relayUpstream(res, upstream) {
   res.end();
 }
 
-async function pipeSseWithNormalization(body, res) {
-  if (!body) return;
-  const reader = body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
+async function pipeSseWithNormalization(body, res, initial = null) {
+  const reader = initial?.reader ?? body?.getReader();
+  if (!reader) return;
+  const decoder = initial?.decoder ?? new TextDecoder();
+  let buffer = initial?.buffer ?? '';
   const flush = (part) => {
     if (!part || !part.trim()) return;
     const parsed = parseSseEvent(part);

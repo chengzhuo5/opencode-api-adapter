@@ -9,6 +9,7 @@ export const DEFAULT_CONFIG = {
   catalogFile: 'catalog.json',
   timeouts: { requestMs: 600000, streamIdleMs: 180000 },
   models: {},
+  nonStreamingUpstream: false,
   compress: {
     enabled: true,
     backend: 'lean-ctx',

@@ -862,3 +862,61 @@ test('relayUpstream emits complete response.failed when passthrough stream break
   assert.equal(obj.response.error.code, 'stream_interrupted');
 });
 
+test('streaming first-event failure auto-retries with non-streaming upstream', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url, stream: body.stream });
+    if (calls.length === 1) {
+      return new Response(new ReadableStream({
+        start(controller) { controller.close(); }
+      }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response', model: 'deepseek-v4-flash', usage: { input_tokens: 7, output_tokens: 3, total_tokens: 10 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {} }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }] })
+    });
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    const done = text.split('\n\n').find((l) => l.startsWith('event: response.completed'));
+    assert.ok(done, 'expected completed event');
+    const data = JSON.parse(done.split('\n').find((l) => l.startsWith('data:')).slice(6));
+    assert.equal(data.response.input_tokens, 7);
+    assert.equal(data.response.object, 'response');
+  });
+  assert.equal(calls.length, 2, 'expected one streaming attempt plus one non-streaming retry');
+  assert.equal(calls[0].stream, true);
+  assert.equal(calls[1].stream, false);
+});
+
+test('streaming passthrough keeps working when first event arrives normally', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(JSON.parse(init.body).stream);
+    return new Response(new ReadableStream({
+      start(controller) {
+        const enc = new TextEncoder();
+        controller.enqueue(enc.encode('event: response.created\ndata: {"type":"response.created","response":{"id":"r1","model":"deepseek-v4-flash","status":"in_progress"}}\n\n'));
+        controller.enqueue(enc.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"r1","model":"deepseek-v4-flash","usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}\n\n'));
+        controller.close();
+      }
+    }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {} }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }] })
+    });
+    const text = await res.text();
+    const done = text.split('\n\n').find((l) => l.startsWith('event: response.completed'));
+    assert.ok(done);
+    const data = JSON.parse(done.split('\n').find((l) => l.startsWith('data:')).slice(6));
+    assert.equal(data.response.input_tokens, 2);
+  });
+  assert.deepEqual(calls, [true], 'no retry when streaming works');
+});

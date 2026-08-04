@@ -4,6 +4,7 @@ import { resolveRoute, UnknownModelError } from './routes.js';
 import { sseEncode } from './sse.js';
 import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js';
 import { anthropicToResponsesObject, translateAnthropicStreamToResponses } from './translate/anthropicToResponses.js';
+import { replayResponsesAsSse } from './translate/responsesReplay.js';
 import { maybeUpgradeModel, minimizeHistoryImages, stripAllImages, DEEPSEEK_MODELS, truncateHistory, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
 import { logEvent } from './logger.js';
 import { maybeCompressInput, loadOutput } from './compression.js';
@@ -64,6 +65,10 @@ if (error instanceof UnknownModelError) sendJson(res, 400, { error: { message: e
 }
 
 async function forward(res, body, route, config, fetchImpl, compression) {
+  // 非流式上游模式：Codex 请求流式，但向上游发 stream:false（完整 JSON），
+  // 拿到响应后由路由回放成 SSE，避免上游流中断导致客户端解析失败。
+  const replay = Boolean(config.nonStreamingUpstream && body.stream === true);
+  const effective = replay ? { ...body, stream: false } : body;
   if (route.upstream === 'messages') {
     const headers = {
       'content-type': 'application/json',
@@ -71,23 +76,29 @@ async function forward(res, body, route, config, fetchImpl, compression) {
       'anthropic-version': '2023-06-01'
     };
     const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
-    const requestBody = responsesToAnthropicRequest(body);
+    const requestBody = responsesToAnthropicRequest(effective);
     const upstream = await fetchImpl(route.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
     if (!upstream.ok) {
       await relayError(res, upstream);
       return;
     }
-    if (body.stream) {
+    if (effective.stream) {
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
       await translateAnthropicStreamToResponses(upstream.body, body.model, (event, data) => res.write(sseEncode(event, data)));
       res.end();
     } else {
       const message = await upstream.json();
-      sendJson(res, upstream.status, anthropicToResponsesObject(message, body.model));
+      if (replay) {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+        replayResponsesAsSse(anthropicToResponsesObject(message, body.model), (event, data) => res.write(sseEncode(event, data)));
+        res.end();
+      } else {
+        sendJson(res, upstream.status, anthropicToResponsesObject(message, body.model));
+      }
     }
     return;
   }
-  let upgraded = maybeUpgradeModel(body);
+  let upgraded = maybeUpgradeModel(effective);
   if (upgraded !== body) {
     const minimized = minimizeHistoryImages(upgraded.input);
     upgraded = { ...upgraded, input: minimized.input };
@@ -126,7 +137,7 @@ async function forward(res, body, route, config, fetchImpl, compression) {
     }
   }
   const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache, compression?.safety, compression?.stats);
-  await forwardWithFallback(res, compressed, route, config, fetchImpl, body.model);
+  await forwardWithFallback(res, compressed, route, config, fetchImpl, body.model, { replay });
 }
 
 async function readJson(req) {
