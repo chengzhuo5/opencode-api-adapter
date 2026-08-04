@@ -274,7 +274,8 @@ test('round-trips context when switching between chat and responses routes', asy
     {
       role: 'assistant',
       content: 'ok',
-      tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'sh', arguments: '{}' } }]
+      tool_calls: [{ id: 'call_2', type: 'function', function: { name: 'sh', arguments: '{}' } }],
+      reasoning_content: ''
     },
     { role: 'tool', tool_call_id: 'call_2', content: 'done' }
   ]);

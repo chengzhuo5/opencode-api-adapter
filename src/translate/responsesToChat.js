@@ -36,7 +36,7 @@ export function responsesToChatRequest(body) {
       continue;
     }
     if (item.type === 'function_call' || item.type === 'custom_tool_call') {
-      appendChatToolCall(messages, chatToolCall(item), pendingReasoning);
+      appendChatToolCall(messages, chatToolCall(item), pendingReasoning, String(body.model || '').startsWith('deepseek'));
       pendingReasoning = '';
       continue;
     }
@@ -108,16 +108,17 @@ function reasoningText(item) {
 }
 
 
-function appendChatToolCall(messages, toolCall, reasoning = '') {
+function appendChatToolCall(messages, toolCall, reasoning = '', deepseek = false) {
   const last = messages[messages.length - 1];
   if (last?.role === 'assistant') {
     last.tool_calls = [...(last.tool_calls || []), toolCall];
     if (last.content === undefined) last.content = null;
-    if (reasoning && !last.reasoning_content) last.reasoning_content = reasoning;
+    if (reasoning) last.reasoning_content = reasoning;
+    else if (deepseek && last.reasoning_content === undefined) last.reasoning_content = '';
     return;
   }
   const assistant = { role: 'assistant', content: null, tool_calls: [toolCall] };
-  assistant.reasoning_content = reasoning || '';
+  assistant.reasoning_content = reasoning || (deepseek ? '' : undefined);
   messages.push(assistant);
 }
 

@@ -142,3 +142,23 @@ test('repairs dangling and orphaned tool messages in replayed history', () => {
   assert.equal(request.messages[3].tool_call_id, 'call_ok');
 });
 
+test('tool calls appended to a text assistant still carry reasoning_content', () => {
+  const request = responsesToChatRequest({
+    model: 'deepseek-v4-flash',
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'start' }] },
+      { type: 'function_call', call_id: 'call_1', name: 'sh', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'ok' },
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'text answer', annotations: [] }] },
+      { type: 'function_call', call_id: 'call_2', name: 'sh', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_2', output: 'done' }
+    ]
+  });
+  const assistants = request.messages.filter((m) => m.role === 'assistant' && Array.isArray(m.tool_calls));
+  assert.ok(assistants.length >= 2, 'expected assistants with tool_calls');
+  const textAssistant = assistants.find((m) => m.content === 'text answer');
+  assert.ok(textAssistant, 'text assistant should receive appended tool_calls');
+  for (const assistant of assistants) {
+    assert.ok(Object.hasOwn(assistant, 'reasoning_content'), 'every deepseek tool-call assistant must carry reasoning_content');
+  }
+});
