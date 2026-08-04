@@ -80,7 +80,10 @@ async function withServer(config, fetchImpl, fn) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   try { await fn(`http://127.0.0.1:${server.address().port}`); }
-  finally { server.close(); }
+  finally {
+    server.closeAllConnections?.();
+    server.close();
+  }
 }
 
 test('fallback retries chat when responses returns 500', async () => {
