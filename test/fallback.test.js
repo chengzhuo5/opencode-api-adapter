@@ -31,6 +31,19 @@ test('hasImageInput detects images inside function_call_output', () => {
   assert.equal(hasImageInput(body), true, 'image inside function_call_output.output must be detected');
 });
 
+test('hasImageInput detects images in tool outputs after the latest user message', () => {
+  const body = {
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look at the screenshot' }] },
+      { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
+      { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: 'data:image/png;base64,AAAA' }] },
+      { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'shell_command', arguments: '{}' },
+      { type: 'function_call_output', id: 'fco_2', call_id: 'call_2', output: 'ran a command' }
+    ]
+  };
+  assert.equal(hasImageInput(body), true, 'image in current turn tool outputs must be detected even if not the last item');
+});
+
 test('hasImageInput ignores images from older history turns', () => {
   const body = {
     input: [
@@ -575,6 +588,40 @@ test('deepseek request with image in function_call_output upgrades to luna and h
   assert.equal(calls[0].url, 'https://ergouapi.com/v1/responses', 'fco image must upgrade deepseek to luna and hit ergou');
   assert.equal(calls[0].body.model, 'gpt-5.6-luna');
   assert.equal(calls[0].body.input[1].output[0].type, 'input_image', 'current fco image is preserved');
+});
+
+test('view_image output upgrades deepseek even when followed by other tool calls', async () => {
+  const calls = [];
+  const img = 'data:image/png;base64,AAAA';
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: true,
+        input: [
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'look at the screenshot' }] },
+          { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
+          { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: img }] },
+          { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'shell_command', arguments: '{}' },
+          { type: 'function_call_output', id: 'fco_2', call_id: 'call_2', output: 'ran a command' }
+        ]
+      })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://ergouapi.com/v1/responses', 'view_image in current turn must upgrade to luna and hit ergou');
+  assert.ok(JSON.stringify(calls[0].body.input).includes('base64'), 'image must be preserved for luna');
 });
 
 test('provider array tries each endpoint in order until success', async () => {

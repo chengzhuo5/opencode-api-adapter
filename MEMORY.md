@@ -27,6 +27,14 @@
 - 图片 fco 数组：升级路径保留最新图给 luna；非升级路径全部剥离
 - `file_id` 图片不能被 strip（file_id_compat 检测依赖它）
 
+## 2026-08-04：view_image 后跟其他工具导致图片被剥离
+
+**现象**：agent 调用 view_image 看图后，若紧接着跑了其他命令（最后一条 fco 是文本），多模态升级不触发，图片走 stripAllImages 被替换成 `[image omitted]`，模型拿不到图。
+
+**修复**：`hasImageInput` 从"只查最后一条 fco"扩展为"查最后一条 user 消息之后的所有项（含 user 本身）"——view_image 输出图片后即使再跑其他工具，图片仍属当前轮次，触发升级到 luna 保留图片。同时保留最后 fco 检查兼容旧结构。
+
+**要点**：剥离（stripAllImages）只对无视觉模型（deepseek）生效；luna 直连和升级路径都保留图片。
+
 ## 运维注意
 
 - **改 key 后必须重启路由**：进程启动时固化环境变量；`scripts/restart-router.ps1` 会从注册表注入

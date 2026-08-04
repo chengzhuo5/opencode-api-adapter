@@ -44,12 +44,21 @@ function itemImages(item) {
 export function hasImageInput(body) {
   const input = body?.input;
   if (!Array.isArray(input)) return false;
-  const latestUser = [...input].reverse().find((item) => (
-    item
-    && typeof item === 'object'
-    && (item.role === 'user' || (item.type === 'message' && item.role === 'user'))
-  ));
-  if (itemImages(latestUser).length > 0) return true;
+  let lastUserIdx = -1;
+  for (let i = input.length - 1; i >= 0; i--) {
+    const item = input[i];
+    if (item && typeof item === 'object' && (item.role === 'user' || (item.type === 'message' && item.role === 'user'))) {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  // 当前轮次 = 最后一条 user 消息之后（含该消息本身）的所有项：
+  // view_image 输出图片后即使再跑了其他工具，图片仍属于本轮，应触发多模态升级。
+  const start = Math.max(lastUserIdx, 0);
+  for (let i = start; i < input.length; i++) {
+    if (itemImages(input[i]).length > 0) return true;
+  }
+  // 兼容历史结构：最后一条工具输出含图也视为当前轮次
   const latestFco = [...input].reverse().find((item) => (
     item && typeof item === 'object' && item.type === 'function_call_output'
   ));
