@@ -340,18 +340,27 @@ export function normalizeResponsesObject(resp, fallbackStatus) {
   return out;
 }
 
-async function relayNonStreamingResponse(res, upstream, displayModel) {
+async function parseNonStreamingResponse(upstream, displayModel) {
   const text = await upstream.text();
-  let response;
   try {
     const parsed = JSON.parse(text);
     if (parsed && typeof parsed === 'object' && (parsed.object === 'response' || (parsed.id && parsed.model))) {
-      response = normalizeResponsesObject(parsed, 'completed');
-    } else {
-      response = normalizeResponsesObject({ id: 'resp_' + randomUUID().replace(/-/g, ''), status: 'failed', error: { code: 'upstream_response', message: 'upstream returned a non-response payload' } }, 'failed');
+      return normalizeResponsesObject(parsed, 'completed');
     }
   } catch {
-    sendJson(res, 502, { error: { message: `upstream returned non-JSON response: ${text.slice(0, 200)}` } });
+    return null;
+  }
+  return normalizeResponsesObject({
+    id: 'resp_' + randomUUID().replace(/-/g, ''),
+    status: 'failed',
+    error: { code: 'upstream_response', message: 'upstream returned a non-response payload' }
+  }, 'failed');
+}
+
+async function relayNonStreamingResponse(res, upstream, displayModel) {
+  const response = await parseNonStreamingResponse(upstream, displayModel);
+  if (!response) {
+    sendJson(res, 502, { error: { message: 'upstream returned non-JSON response' } });
     return;
   }
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
@@ -365,37 +374,79 @@ async function relayNonStreamingResponse(res, upstream, displayModel) {
  * JSON 后回放为 SSE。流开始转发后中断则补发完整 failed（由
  * pipeSseWithNormalization 处理）。
  */
+/**
+ * 方案 3（流式优先 + 断流/首事件超时自动降级）：
+ * - 先向 Codex 写 SSE 头，等待上游真实事件期间持续发送 keep-alive，
+ *   避免 Codex 因长时间无字节判定 stream disconnected；
+ * - 上游可能先发纯注释行（: keep-alive），这些不算真实事件，跳过；
+ * - 等待真实事件超时（streamIdleMs，默认 180s，与 Codex 空闲窗口一致）
+ *   后取消流式，改发 stream:false 重试；拿到完整 JSON 后补全字段并回放
+ *   为 SSE；重试也失败则补发字段完整的 response.failed。
+ */
 export async function relayUpstreamSmart(res, upstream, body, config, fetchImpl, displayModel, provider) {
   const contentType = upstream.headers.get('content-type') || 'application/json';
   if (!contentType.includes('text/event-stream')) {
     await relayUpstream(res, upstream);
     return;
   }
+  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
-  let first;
+  const keepAlive = startKeepAlive(res);
+  // 最长等待真实首事件的时间。期间路由持续向 Codex 发 keep-alive，客户端不会
+  // 因空闲判定断流；上游流仍活着（keep-alive 注释）就继续等，EOF/错误才兜底。
+  const firstTimeoutMs = Math.max(30000, config.timeouts?.streamIdleMs || 180000);
+  let buffer = '';
+  let firstSeenAt = null;
   try {
-    const { done, value } = await reader.read();
-    first = done ? '' : decoder.decode(value, { stream: true });
+    const deadline = Date.now() + firstTimeoutMs;
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const { done, value } = await Promise.race([
+        reader.read(),
+        new Promise((resolve) => setTimeout(() => resolve({ timedout: true }), remaining))
+      ]);
+      if (done) break;
+      if (value && value.length) {
+        buffer += decoder.decode(value, { stream: true });
+        // 纯注释行（: keep-alive）不算真实事件，继续等
+        if (buffer.split('\n\n').some((part) => part.trim() && !part.trimStart().startsWith(':'))) {
+          firstSeenAt = Date.now();
+          break;
+        }
+      }
+    }
   } catch {
-    first = null;
+    // 上游流错误，视为无真实首事件
   }
-  if (first === null || first.trim() === '') {
+  stopKeepAlive(keepAlive);
+  if (firstSeenAt === null) {
     try { reader.cancel?.(); } catch { /* noop */ }
-    await retryNonStreaming(res, body, config, fetchImpl, displayModel, provider);
+    await retryNonStreamingReplay(res, body, config, fetchImpl, displayModel, provider, buffer);
     return;
   }
-  res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-  await pipeSseWithNormalization(upstream.body, res, { reader, decoder, buffer: first });
+  await pipeSseWithNormalization(upstream.body, res, { reader, decoder, buffer });
   res.end();
 }
 
-async function retryNonStreaming(res, body, config, fetchImpl, displayModel, provider) {
+function startKeepAlive(res) {
+  return setInterval(() => {
+    try { res.write(': keep-alive\n\n'); } catch { /* noop */ }
+  }, 10000);
+}
+
+function stopKeepAlive(handle) {
+  if (handle) clearInterval(handle);
+}
+
+async function retryNonStreamingReplay(res, body, config, fetchImpl, displayModel, provider, staleBuffer = '') {
   logEvent(config, {
     event: 'stream_retry_nonstreaming',
     model: displayModel,
     reason: 'first_event_timeout',
-    endpoint: provider.endpoint
+    endpoint: provider.endpoint,
+    stale_bytes: staleBuffer.length
   });
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${provider.apiKey}` };
   const retryBody = { ...body, stream: false };
@@ -404,16 +455,31 @@ async function retryNonStreaming(res, body, config, fetchImpl, displayModel, pro
       method: 'POST',
       headers,
       body: JSON.stringify(normalizeResponsesRequest(retryBody)),
-      signal: AbortSignal.timeout(config.timeouts?.requestMs || 600000)
+      signal: AbortSignal.timeout(Math.min(config.timeouts?.requestMs || 600000, 60000))
     });
     if (retry.ok) {
-      await relayNonStreamingResponse(res, retry, displayModel);
+      const response = await parseNonStreamingResponse(retry, displayModel);
+      replayResponsesAsSse(response, (event, data) => res.write(sseEncode(event, data)));
+      res.end();
       return;
     }
-    await relayError(res, retry);
+    const text = await retry.text();
+    writeFailedEvent(res, 'upstream_error', `upstream ${retry.status}: ${text.slice(0, 200)}`);
   } catch (error) {
-    sendJson(res, 502, { error: { message: `streaming failed and non-streaming retry failed: ${error?.message || error}` } });
+    writeFailedEvent(res, 'retry_failed', String(error?.message || 'retry failed').slice(0, 200));
   }
+}
+
+function writeFailedEvent(res, code, message) {
+  const failed = normalizeResponsesObject({
+    id: 'resp_' + randomUUID().replace(/-/g, ''),
+    status: 'failed',
+    error: { code, message }
+  }, 'failed');
+  try {
+    res.write(sseEncode('response.failed', { type: 'response.failed', response: failed }));
+    res.end();
+  } catch { /* noop */ }
 }
 
 export async function relayUpstream(res, upstream) {
@@ -446,6 +512,8 @@ async function pipeSseWithNormalization(body, res, initial = null) {
   if (!reader) return;
   const decoder = initial?.decoder ?? new TextDecoder();
   let buffer = initial?.buffer ?? '';
+  const keepAlive = startKeepAlive(res);
+  let terminalSeen = false;
   const flush = (part) => {
     if (!part || !part.trim()) return;
     const parsed = parseSseEvent(part);
@@ -459,6 +527,7 @@ async function pipeSseWithNormalization(body, res, initial = null) {
       if (obj && typeof obj === 'object' && obj.response) {
         obj.response = normalizeResponsesObject(obj.response, RESPONSE_STATUS_FOR_EVENT[parsed.event] || 'completed');
         res.write(sseEncode(parsed.event, obj));
+        if (parsed.event === 'response.completed' || parsed.event === 'response.failed') terminalSeen = true;
         return;
       }
     } catch {
@@ -474,6 +543,7 @@ async function pipeSseWithNormalization(body, res, initial = null) {
       const parts = buffer.split('\n\n');
       buffer = parts.pop() ?? '';
       for (const part of parts) flush(part);
+      if (terminalSeen) break;
     }
     flush(buffer);
   } catch (error) {
@@ -489,6 +559,7 @@ async function pipeSseWithNormalization(body, res, initial = null) {
       res.end();
     } catch { /* noop */ }
   } finally {
+    stopKeepAlive(keepAlive);
     reader.releaseLock();
   }
 }

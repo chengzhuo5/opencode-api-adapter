@@ -825,7 +825,8 @@ test('relayUpstream normalizes streamed responses completed events', async () =>
   assert.equal(obj.response.status, 'completed');
   assert.ok(typeof obj.response.created_at === 'number');
   assert.ok(Array.isArray(obj.response.output));
-  assert.ok(written.includes('event: ping'));
+  // completed 是终止事件：早退不等待 EOF，后续注释/心跳不再转发
+  assert.equal(written.includes('event: ping'), false);
 });
 
 test('relayUpstream normalizes non-stream response json', async () => {
