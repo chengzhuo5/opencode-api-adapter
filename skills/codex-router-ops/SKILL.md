@@ -91,7 +91,7 @@ node scripts\debug-image-ergou.mjs
 - `apiKeyEnv`：该服务商 key 的环境变量名
 - `maxHistoryMessages`：转发前只保留最近 N 条消息（小上下文窗口服务商用）
 
-服务商降级链：自定义服务商 → OpenCode → chat/completions。
+`endpoint` 和全局 `apiBaseUrl` 都支持字符串或**数组**：数组按顺序逐个尝试，第一个成功响应的生效（多服务商冗余）。服务商降级链：自定义服务商列表 → OpenCode 列表 → chat/completions。
 
 ## 日志
 

@@ -53,6 +53,25 @@ test('route without custom endpoint has no provider fallback', () => {
   assert.equal(route.apiKey, 'k');
 });
 
+test('resolves ordered providers from array endpoints', () => {
+  const cfg = {
+    apiBaseUrl: ['https://global-a/v1', 'https://global-b/v1'],
+    apiKey: 'gk',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: ['https://ergou1/v1', 'https://ergou2/v1'], apiKey: 'ek' } }
+  };
+  const route = resolveRoute(cfg, 'gpt-5.6-luna');
+  assert.deepEqual(route.providers.map((p) => p.endpoint), [
+    'https://ergou1/v1/responses',
+    'https://ergou2/v1/responses',
+    'https://global-a/v1/responses',
+    'https://global-b/v1/responses'
+  ]);
+  assert.equal(route.endpoint, 'https://ergou1/v1/responses');
+  assert.equal(route.apiKey, 'ek');
+  assert.equal(route.fallbackEndpoint, 'https://ergou2/v1/responses');
+  assert.equal(route.fallbackApiKey, 'ek');
+});
+
 test('lists routed models', () => {
   assert.ok(listRoutedModels(config).includes('gpt-5.6-luna'));
   assert.ok(listRoutedModels(config).includes('qwen3.6-plus'));

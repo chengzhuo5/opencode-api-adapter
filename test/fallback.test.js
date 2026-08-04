@@ -577,6 +577,30 @@ test('deepseek request with image in function_call_output upgrades to luna and h
   assert.equal(calls[0].body.input[1].output[0].type, 'input_image', 'current fco image is preserved');
 });
 
+test('provider array tries each endpoint in order until success', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === 'https://ergou1/v1/responses') {
+      return new Response(JSON.stringify({ error: { message: 'down' } }), { status: 500, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: ['https://global-b/v1'],
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: ['https://ergou1/v1', 'https://ergou2/v1'], apiKey: 'ek' } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-luna', stream: true, input: [] })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.deepEqual(calls, ['https://ergou1/v1/responses', 'https://ergou2/v1/responses'], 'should try array endpoints in order');
+});
+
 test('truncateHistory keeps latest N items and avoids orphan function_call_output at head', () => {
   const input = [];
   for (let i = 0; i < 20; i++) input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: `m${i}` }] });

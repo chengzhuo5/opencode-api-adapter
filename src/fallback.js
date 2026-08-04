@@ -143,18 +143,21 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
     await forwardChat(res, body, config, fetchImpl, displayModel);
     return;
   }
-  let providers = [
-    { endpoint: route.endpoint, apiKey: route.apiKey ?? config.apiKey },
-    ...(route.fallbackEndpoint ? [{ endpoint: route.fallbackEndpoint, apiKey: route.fallbackApiKey ?? config.apiKey }] : [])
-  ];
+  let providers = Array.isArray(route.providers) && route.providers.length
+    ? route.providers
+    : [
+        { endpoint: route.endpoint, apiKey: route.apiKey ?? config.apiKey },
+        ...(route.fallbackEndpoint ? [{ endpoint: route.fallbackEndpoint, apiKey: route.fallbackApiKey ?? config.apiKey }] : [])
+      ];
   if (hasFileIdInput(body) && providers.length > 1) {
+    const skip = Math.min(route.customProviderCount ?? (providers.length > 1 ? 1 : 0), providers.length - 1);
     logEvent(config, {
       event: 'file_id_compat',
       model: displayModel,
       reason: 'file_id_image_routes_to_opencode',
-      endpoint: providers[1].endpoint
+      endpoint: providers[skip].endpoint
     });
-    providers = [providers[1]];
+    providers = providers.slice(skip);
   }
   const requestBody = normalizeResponsesRequest(body);
   const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);

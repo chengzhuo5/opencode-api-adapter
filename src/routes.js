@@ -33,15 +33,28 @@ export function resolveRoute(config, model) {
   if (!upstream) throw new UnknownModelError(model);
   const effective = upstream === 'messages' ? 'messages' : 'responses';
   const suffix = effective === 'messages' ? 'messages' : 'responses';
-  const baseUrl = entry?.endpoint ?? config.apiBaseUrl;
-  const hasCustomProvider = Boolean(entry?.endpoint);
+  const toBases = (value) => (Array.isArray(value) ? value : [value]).filter((v) => typeof v === 'string' && v);
+  const customBases = toBases(entry?.endpoint);
+  const globalBases = toBases(config.apiBaseUrl);
+  const providers = [
+    ...customBases.map((base) => ({ endpoint: `${base}/${suffix}`, apiKey: entry?.apiKey ?? config.apiKey })),
+    ...globalBases.map((base) => ({ endpoint: `${base}/${suffix}`, apiKey: config.apiKey }))
+  ];
+  const seen = new Set();
+  const unique = providers.filter((p) => {
+    if (seen.has(p.endpoint)) return false;
+    seen.add(p.endpoint);
+    return true;
+  });
   return {
     model,
     upstream: effective,
-    endpoint: `${baseUrl}/${suffix}`,
-    apiKey: entry?.apiKey ?? config.apiKey,
-    fallbackEndpoint: hasCustomProvider ? `${config.apiBaseUrl}/${suffix}` : null,
-    fallbackApiKey: hasCustomProvider ? config.apiKey : null
+    endpoint: unique[0]?.endpoint,
+    apiKey: unique[0]?.apiKey,
+    fallbackEndpoint: unique[1]?.endpoint ?? null,
+    fallbackApiKey: unique[1]?.apiKey ?? null,
+    providers: unique,
+    customProviderCount: customBases.length
   };
 }
 

@@ -88,6 +88,8 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 - `maxHistoryMessages`：可选，转发前只保留最近 N 条消息（自定义服务商上下文窗口较小时使用，如 ergou 的 luna）；默认不截断
 - 优先级：自定义服务商 → `apiBaseUrl`（OpenCode）→ 协议降级（chat/completions）
 
+`endpoint` 和全局 `apiBaseUrl` 都支持**字符串或数组**：数组时按顺序逐个尝试，第一个成功响应的生效（如 `"endpoint": ["https://ergouapi.com/v1", "https://backup.example/v1"]`）。
+
 也可以通过环境变量或命令行指定配置：
 
 ```powershell
