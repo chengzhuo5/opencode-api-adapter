@@ -1,11 +1,11 @@
-﻿# start-router-watchdog.ps1 — 路由(15722) + lean-ctx daemon(4444) 保活看门狗
+﻿# start-router-watchdog.ps1 — 路由(15722) + lean-ctx proxy(4444) 保活看门狗
 # 用法（任务计划程序/启动文件夹）：
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Code\AI\opencode-api-adapter\scripts\start-router-watchdog.ps1"
 $ErrorActionPreference = 'Continue'
-$routerDir = 'C:\Code\AI\opencode-api-adapter'
+$routerDir = 'C:\Users\cheng\Documents\Codex\2026-08-03\new-chat-2\outputs\codex-router'
 $logDir = Join-Path $routerDir 'logs'
 $nodeExe = 'C:\Program Files\nodejs\node.exe'
-$leanCtxExe = 'C:\Users\29302\.local\bin\lean-ctx.exe'
+$leanCtxExe = 'C:\ProgramData\npm\npm\node_modules\lean-ctx-bin\bin\lean-ctx.exe'
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
