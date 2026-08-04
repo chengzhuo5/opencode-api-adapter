@@ -557,6 +557,21 @@ test('minimizeHistoryImages strips historical images inside function_call_output
   assert.equal(out[4].output[0].type, 'input_image');
 });
 
+test('minimizeHistoryImages keeps every image of the current turn (compare scenario)', () => {
+  const img = 'data:image/png;base64,AAAA';
+  const input = [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'compare these two screenshots' }] },
+    { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
+    { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: img }] },
+    { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'view_image', arguments: '{}' },
+    { type: 'function_call_output', id: 'fco_2', call_id: 'call_2', output: [{ type: 'input_image', image_url: img }] }
+  ];
+  const { input: out, removedImages } = minimizeHistoryImages(input);
+  assert.equal(removedImages, 0, 'both current-turn screenshots must be kept for comparison');
+  assert.equal(out[2].output[0].type, 'input_image', 'first screenshot kept');
+  assert.equal(out[4].output[0].type, 'input_image', 'second screenshot kept');
+});
+
 test('deepseek request with image in function_call_output upgrades to luna and hits ergou', async () => {
   const calls = [];
   const img = 'data:image/png;base64,AAAA';
@@ -576,9 +591,9 @@ test('deepseek request with image in function_call_output upgrades to luna and h
         model: 'deepseek-v4-flash',
         stream: true,
         input: [
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what is this?' }] },
           { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
-          { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: img }] },
-          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'what is this?' }] }
+          { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: img }] }
         ]
       })
     });
@@ -587,7 +602,7 @@ test('deepseek request with image in function_call_output upgrades to luna and h
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, 'https://ergouapi.com/v1/responses', 'fco image must upgrade deepseek to luna and hit ergou');
   assert.equal(calls[0].body.model, 'gpt-5.6-luna');
-  assert.equal(calls[0].body.input[1].output[0].type, 'input_image', 'current fco image is preserved');
+  assert.equal(calls[0].body.input[2].output[0].type, 'input_image', 'current fco image is preserved');
 });
 
 test('view_image output upgrades deepseek even when followed by other tool calls', async () => {

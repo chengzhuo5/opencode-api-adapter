@@ -80,37 +80,34 @@ function hasFileIdInput(body) {
  */
 export function minimizeHistoryImages(input) {
   const items = Array.isArray(input) ? input : [];
-  let lastImageIndex = -1;
+  let lastUserIdx = -1;
   for (let i = items.length - 1; i >= 0; i--) {
-    if (itemImages(items[i]).length > 0) {
-      lastImageIndex = i;
+    const item = items[i];
+    if (item && typeof item === 'object' && (item.role === 'user' || (item.type === 'message' && item.role === 'user'))) {
+      lastUserIdx = i;
       break;
     }
   }
-  if (lastImageIndex < 0) return { input, removedImages: 0 };
+  // 当前轮次 = 最后一条 user 消息之后的所有项（含该消息本身），
+  // 其中的图片（如同一轮连续多次 view_image 的对比截图）全部保留；
+  // 只有更早历史轮次的图片才替换为占位。
+  const currentStart = Math.max(lastUserIdx, 0);
   let removedImages = 0;
+  const stripPart = (part) => {
+    if (isImagePart(part)) {
+      removedImages += 1;
+      return { type: 'input_text', text: '[image omitted]' };
+    }
+    return part;
+  };
   const out = items.map((item, index) => {
-    if (index === lastImageIndex) return item;
+    if (index >= currentStart) return item;
     if (!item || typeof item !== 'object') return item;
     if (item.type === 'function_call_output' && Array.isArray(item.output)) {
-      const output = item.output.map((part) => {
-        if (isImagePart(part)) {
-          removedImages += 1;
-          return { type: 'input_text', text: '[image omitted]' };
-        }
-        return part;
-      });
-      return { ...item, output };
+      return { ...item, output: item.output.map(stripPart) };
     }
     if (Array.isArray(item.content)) {
-      const content = item.content.map((part) => {
-        if (isImagePart(part)) {
-          removedImages += 1;
-          return { type: 'input_text', text: '[image omitted]' };
-        }
-        return part;
-      });
-      return { ...item, content };
+      return { ...item, content: item.content.map(stripPart) };
     }
     return item;
   });

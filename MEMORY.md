@@ -35,6 +35,20 @@
 
 **要点**：剥离（stripAllImages）只对无视觉模型（deepseek）生效；luna 直连和升级路径都保留图片。
 
+## 2026-08-04：同一轮多次 view_image 对比场景丢图
+
+**现象**：同一轮连续两次 view_image（对比两张截图）时，`minimizeHistoryImages` 只保留最后一张，第一张变 `[image omitted]`。
+
+**修复**：`minimizeHistoryImages` 改为保留"最后一条 user 消息之后的所有图片"（含该消息本身），同一轮的多张截图全部保留；仅剥离更早历史轮次的图片。注意 Codex 真实请求结构是 user 消息在工具调用之前、fco 在末尾。
+
+## 运维：lean-ctx 4444 未自启导致压缩静默失效
+
+**现象**：`tokens_saved` 变 0。根因是 lean-ctx proxy（4444）没运行（机器重启后未自启），压缩请求全部 `backend_unavailable` 降级。
+
+**恢复**：`Start-Process lean-ctx.exe proxy start --port=4444`（本机 exe：`C:\ProgramData\npm\npm\node_modules\lean-ctx-bin\bin\lean-ctx.exe`）。
+
+**注意**：`scripts/start-router-watchdog.ps1` 是另一台机器的路径（C:\Code\AI、用户 29302），本机需适配后使用。
+
 ## 运维注意
 
 - **改 key 后必须重启路由**：进程启动时固化环境变量；`scripts/restart-router.ps1` 会从注册表注入
