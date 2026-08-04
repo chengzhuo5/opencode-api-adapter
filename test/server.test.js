@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRouter } from '../src/server.js';
+import { normalizeResponsesRequest } from '../src/translate/responsesContext.js';
 
 async function withServer(config, fetchImpl, fn) {
   const server = createRouter(config, { fetchImpl });
@@ -345,4 +346,19 @@ test('responses passthrough flattens assistant history for upstream', async () =
     { type: 'function_call', call_id: 'call_1', name: 'sh', arguments: '{}' },
     { type: 'function_call_output', call_id: 'call_1', output: 'ok' }
   ]);
+});
+
+test('normalizeResponsesRequest drops reasoning items from input', () => {
+  const request = normalizeResponsesRequest({
+    model: 'gpt-5.6-luna',
+    input: [
+      { type: 'reasoning', id: 'rs_1', summary: [{ type: 'summary_text', text: 'think' }] },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+      { type: 'reasoning', id: 'rs_2', summary: [] },
+      { type: 'function_call', call_id: 'call_1', name: 'sh', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_1', output: 'ok' }
+    ]
+  });
+  assert.equal(request.input.some((item) => item.type === 'reasoning'), false, 'reasoning items must not be forwarded');
+  assert.deepEqual(request.input.map((i) => i.type), ['message', 'function_call', 'function_call_output']);
 });

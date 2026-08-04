@@ -64,13 +64,12 @@ function normalizeResponsesItem(item) {
     return output;
   }
 
-  if (item.type === 'reasoning') {
-    const reasoning = { type: 'reasoning' };
-    copyIfPresent(reasoning, item, 'id');
-    copyIfPresent(reasoning, item, 'summary');
-    copyIfPresent(reasoning, item, 'encrypted_content');
-    return reasoning;
-  }
+  // OpenAI-compatible Responses endpoints (including ergou relays) reject
+  // `reasoning` as an input item and treat its id as a stored-item reference,
+  // which 404s/400s when `store` is false. Reasoning is an output artifact, so
+  // drop it when replaying history. The chat path maps it separately via
+  // responsesToChatRequest.
+  if (item.type === 'reasoning') return null;
 
   return stripInternalFields(item);
 }
