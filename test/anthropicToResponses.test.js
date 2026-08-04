@@ -71,3 +71,29 @@ test('emits response.failed on anthropic stream break', async () => {
   assert.equal(events[events.length - 1].event, 'response.failed');
 });
 
+test('anthropic response object carries top-level tokens and stream usage', async () => {
+  const obj = anthropicToResponsesObject({
+    id: 'msg_1',
+    model: 'minimax-m3',
+    content: [{ type: 'text', text: 'hi' }],
+    usage: { input_tokens: 11, output_tokens: 4 }
+  }, 'minimax-m3');
+  assert.equal(obj.input_tokens, 11);
+  assert.equal(obj.output_tokens, 4);
+
+  const body = streamFromChunks([
+    'event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":5,"output_tokens":1}}}\n\n',
+    'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
+    'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"he"}}\n\n',
+    'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n',
+    'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":9,"output_tokens":2}}\n\n',
+    'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+  ]);
+  const events = [];
+  await translateAnthropicStreamToResponses(body, 'minimax-m3', (event, data) => events.push({ event, data }));
+  const completed = events.find((item) => item.event === 'response.completed');
+  assert.equal(completed.data.response.input_tokens, 9);
+  assert.equal(completed.data.response.output_tokens, 2);
+  assert.deepEqual(completed.data.response.usage, { input_tokens: 9, output_tokens: 2 });
+});
+

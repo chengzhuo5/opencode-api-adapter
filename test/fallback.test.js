@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages, truncateHistory, stripAllImages, relayError } from '../src/fallback.js';
+import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages, truncateHistory, stripAllImages, relayError, relayUpstream } from '../src/fallback.js';
 
 test('hasImageInput detects input_image blocks', () => {
   const body = { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }, { type: 'input_image', image_url: 'https://x/1.png' }] }] };
@@ -802,3 +802,41 @@ test('vision model direct request keeps images (no strip)', async () => {
   assert.ok(JSON.stringify(calls[0].body.input).includes('base64'), 'vision model request must keep the image');
   assert.equal(calls[0].body.input[0].content[1].type, 'input_image');
 });
+
+test('relayUpstream normalizes streamed responses completed events', async () => {
+  const calls = [];
+  const res = { writeHead: (s, h) => calls.push(['head', s]), write: (c) => calls.push(['write', Buffer.isBuffer(c) ? c.toString() : String(c)]), end: () => calls.push(['end']) };
+  const upstream = new Response(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      controller.enqueue(enc.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"r1","model":"deepseek-v4-flash","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}\n\n'));
+      controller.enqueue(enc.encode('event: ping\ndata: {} \n\n'));
+      controller.close();
+    }
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  await relayUpstream(res, upstream);
+  const written = calls.filter((c) => c[0] === 'write').map((c) => c[1]).join('');
+  const completed = written.match(/event: response\.completed\ndata: (\{.*?\})\n\n/s)?.[1];
+  assert.ok(completed, 'expected normalized completed event');
+  const obj = JSON.parse(completed);
+  assert.equal(obj.response.input_tokens, 5);
+  assert.equal(obj.response.output_tokens, 2);
+  assert.equal(obj.response.object, 'response');
+  assert.equal(obj.response.status, 'completed');
+  assert.ok(typeof obj.response.created_at === 'number');
+  assert.ok(Array.isArray(obj.response.output));
+  assert.ok(written.includes('event: ping'));
+});
+
+test('relayUpstream normalizes non-stream response json', async () => {
+  const calls = [];
+  const res = { writeHead: (s, h) => calls.push(['head', s]), write: (c) => calls.push(['write', Buffer.isBuffer(c) ? c.toString() : String(c)]), end: () => calls.push(['end']) };
+  const upstream = new Response(JSON.stringify({ id: 'r1', model: 'x', usage: { input_tokens: 3, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  await relayUpstream(res, upstream);
+  const body = calls.find((c) => c[0] === 'write')[1];
+  const parsed = JSON.parse(body);
+  assert.equal(parsed.input_tokens, 3);
+  assert.equal(parsed.object, 'response');
+  assert.equal(parsed.status, 'completed');
+});
+

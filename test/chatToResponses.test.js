@@ -122,3 +122,38 @@ test('carries streamed usage into response.completed', async () => {
   assert.ok(completed, 'expected response.completed');
   assert.deepEqual(completed.data.response.usage, { prompt_tokens: 123, completion_tokens: 2, total_tokens: 125 });
 });
+
+test('response object always carries top-level input/output tokens', () => {
+  const withUsage = chatToResponsesObject({
+    id: 'chatcmpl-1',
+    model: 'deepseek-v4-flash',
+    choices: [{ message: { role: 'assistant', content: 'hi' } }],
+    usage: { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 }
+  }, 'deepseek-v4-flash');
+  assert.equal(withUsage.input_tokens, 10);
+  assert.equal(withUsage.output_tokens, 3);
+  assert.deepEqual(withUsage.usage, { prompt_tokens: 10, completion_tokens: 3, total_tokens: 13 });
+
+  const withoutUsage = chatToResponsesObject({
+    id: 'chatcmpl-2',
+    model: 'deepseek-v4-flash',
+    choices: [{ message: { role: 'assistant', content: 'hi' } }]
+  }, 'deepseek-v4-flash');
+  assert.equal(withoutUsage.input_tokens, 0);
+  assert.equal(withoutUsage.output_tokens, 0);
+});
+
+test('streamed completed response carries usage and top-level tokens', async () => {
+  const body = streamFromChunks([
+    'data: {"choices":[{"delta":{"role":"assistant","content":"he"}}]}\n\n',
+    'data: {"choices":[],"usage":{"prompt_tokens":42,"completion_tokens":7,"total_tokens":49}}\n\n',
+    'data: [DONE]\n\n'
+  ]);
+  const events = [];
+  await translateChatStreamToResponses(body, 'deepseek-v4-flash', (event, data) => events.push({ event, data }));
+  const completed = events.find((item) => item.event === 'response.completed');
+  assert.equal(completed.data.response.input_tokens, 42);
+  assert.equal(completed.data.response.output_tokens, 7);
+  assert.deepEqual(completed.data.response.usage, { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 });
+});
+

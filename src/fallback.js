@@ -1,7 +1,7 @@
 import { responsesToChatRequest } from './translate/responsesToChat.js';
 import { chatToResponsesObject, translateChatStreamToResponses } from './translate/chatToResponses.js';
 import { normalizeResponsesRequest } from './translate/responsesContext.js';
-import { sseEncode } from './sse.js';
+import { parseSseEvent, sseEncode } from './sse.js';
 import { logEvent } from './logger.js';
 
 const unsupportedResponses = new Set();
@@ -299,6 +299,33 @@ async function forwardChat(res, body, config, fetchImpl, displayModel) {
   sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
 }
 
+const RESPONSE_STATUS_FOR_EVENT = {
+  'response.created': 'in_progress',
+  'response.in_progress': 'in_progress',
+  'response.completed': 'completed',
+  'response.failed': 'failed'
+};
+
+/**
+ * Responses 直通路径的响应可能缺失 Codex 客户端要求的顶层字段（例如部分网关只
+ * 返回 id/model/usage，导致客户端解析 response.completed 报 missing field
+ * input_tokens）。这里补齐顶层字段，已有字段保持不变。
+ */
+export function normalizeResponsesObject(resp, fallbackStatus) {
+  if (!resp || typeof resp !== 'object' || Array.isArray(resp)) return resp;
+  const usage = resp.usage || {};
+  const out = { ...resp };
+  if (out.object === undefined) out.object = 'response';
+  if (out.created_at === undefined) out.created_at = Math.floor(Date.now() / 1000);
+  if (out.status === undefined) out.status = fallbackStatus || 'completed';
+  if (out.input_tokens === undefined) out.input_tokens = usage.input_tokens ?? usage.prompt_tokens ?? 0;
+  if (out.output_tokens === undefined) out.output_tokens = usage.output_tokens ?? usage.completion_tokens ?? 0;
+  if (out.output === undefined) out.output = [];
+  if (out.error === undefined) out.error = null;
+  if (out.incomplete_details === undefined) out.incomplete_details = null;
+  return out;
+}
+
 export async function relayUpstream(res, upstream) {
   if (!upstream.ok) {
     await relayError(res, upstream);
@@ -306,8 +333,64 @@ export async function relayUpstream(res, upstream) {
   }
   const contentType = upstream.headers.get('content-type') || 'application/json';
   res.writeHead(upstream.status, { 'content-type': contentType });
-  await pipeBody(upstream.body, res);
+  if (contentType.includes('text/event-stream')) {
+    await pipeSseWithNormalization(upstream.body, res);
+  } else {
+    const text = await upstream.text();
+    let out = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === 'object' && (parsed.object === 'response' || (parsed.id && parsed.model))) {
+        out = JSON.stringify(normalizeResponsesObject(parsed, 'completed'));
+      }
+    } catch {
+      // 非 JSON 或解析失败时原样转发
+    }
+    res.write(out);
+  }
   res.end();
+}
+
+async function pipeSseWithNormalization(body, res) {
+  if (!body) return;
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const flush = (part) => {
+    if (!part || !part.trim()) return;
+    const parsed = parseSseEvent(part);
+    if (!parsed) return;
+    if (!parsed.event.startsWith('response.')) {
+      res.write(part + '\n\n');
+      return;
+    }
+    try {
+      const obj = JSON.parse(parsed.data);
+      if (obj && typeof obj === 'object' && obj.response) {
+        obj.response = normalizeResponsesObject(obj.response, RESPONSE_STATUS_FOR_EVENT[parsed.event] || 'completed');
+        res.write(sseEncode(parsed.event, obj));
+        return;
+      }
+    } catch {
+      // 无法解析时原样转发
+    }
+    res.write(part + '\n\n');
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+      for (const part of parts) flush(part);
+    }
+    flush(buffer);
+  } catch (error) {
+    try { res.end(); } catch { /* noop */ }
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 export async function relayError(res, upstream) {

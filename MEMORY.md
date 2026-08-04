@@ -62,3 +62,11 @@
 - **改 key 后必须重启路由**：进程启动时固化环境变量；`scripts/restart-router.ps1` 会从注册表注入
 - 路由进程被停会切断 Codex 会话，重启由用户手动执行
 - `logs/` 已 gitignore；`config.json`、`test.py` 也忽略不提交
+
+
+## 2026-08-04：Responses completed 顶层 input_tokens
+
+- 现象：Codex 报 `stream disconnected before completion: failed to parse ResponseCompleted: missing field input_tokens`。
+- 根因：opencode.ai 的 /responses 直通流返回精简 completed（仅 id/model/usage）；chat 降级与 anthropic 转换生成的 completed 也缺顶层 input_tokens/output_tokens。Codex 客户端严格反序列化要求顶层字段。
+- 修复：fallback.js relayUpstream 对直通 SSE/JSON 规范化（normalizeResponsesObject 补 object/created_at/status/input_tokens/output_tokens/output/error/incomplete_details，值取自 usage 或缺省 0）；chatToResponses.js / anthropicToResponses.js 生成的 completed 同样补顶层 token 字段（tokensFromUsage 兼容 prompt_tokens/completion_tokens 与 input_tokens/output_tokens）。
+- 教训：直通上游的响应格式不可信，客户端要求的顶层字段必须在路由侧兜底补全。

@@ -5,6 +5,13 @@ export function newId(prefix) {
   return `${prefix}_${randomUUID().replace(/-/g, '')}`;
 }
 
+export function tokensFromUsage(usage) {
+  return {
+    input_tokens: usage?.prompt_tokens ?? usage?.input_tokens ?? 0,
+    output_tokens: usage?.completion_tokens ?? usage?.output_tokens ?? 0
+  };
+}
+
 export function chatToResponsesObject(chat, requestModel) {
   const choice = chat.choices?.[0] || {};
   const message = choice.message || {};
@@ -39,6 +46,8 @@ export function chatToResponsesObject(chat, requestModel) {
     output,
     error: null,
     incomplete_details: null,
+    input_tokens: tokensFromUsage(chat.usage).input_tokens,
+    output_tokens: tokensFromUsage(chat.usage).output_tokens,
     ...(chat.usage ? { usage: chat.usage } : {})
   };
 }
@@ -52,7 +61,9 @@ export async function translateChatStreamToResponses(body, requestModel, writeEv
     model: requestModel,
     output: [],
     error: null,
-    incomplete_details: null
+    incomplete_details: null,
+    input_tokens: 0,
+    output_tokens: 0
   };
   writeEvent('response.created', { type: 'response.created', response });
   writeEvent('response.in_progress', { type: 'response.in_progress', response });
@@ -76,7 +87,12 @@ export async function translateChatStreamToResponses(body, requestModel, writeEv
     }
     const delta = chunk.choices?.[0]?.delta || {};
     // OpenAI chat 流式在最后一个 chunk 携带 usage；透传给客户端用于上下文统计
-    if (chunk.usage && !response.usage) response.usage = chunk.usage;
+    if (chunk.usage && !response.usage) {
+      response.usage = chunk.usage;
+      const tokens = tokensFromUsage(chunk.usage);
+      response.input_tokens = tokens.input_tokens;
+      response.output_tokens = tokens.output_tokens;
+    }
     if (delta.reasoning_content) {
       if (!reasoningItem) {
         reasoningItem = {

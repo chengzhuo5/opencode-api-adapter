@@ -33,6 +33,8 @@ export function anthropicToResponsesObject(message, requestModel) {
     output,
     error: null,
     incomplete_details: null,
+    input_tokens: message.usage?.input_tokens ?? 0,
+    output_tokens: message.usage?.output_tokens ?? 0,
     ...(message.usage ? { usage: message.usage } : {})
   };
 }
@@ -46,7 +48,9 @@ export async function translateAnthropicStreamToResponses(body, requestModel, wr
     model: requestModel,
     output: [],
     error: null,
-    incomplete_details: null
+    incomplete_details: null,
+    input_tokens: 0,
+    output_tokens: 0
   };
   writeEvent('response.created', { type: 'response.created', response });
   writeEvent('response.in_progress', { type: 'response.in_progress', response });
@@ -61,6 +65,12 @@ export async function translateAnthropicStreamToResponses(body, requestModel, wr
     try {
       event = JSON.parse(data);
     } catch {
+      continue;
+    }
+    if (event.type === 'message_delta' && event.usage && !response.usage) {
+      response.usage = event.usage;
+      response.input_tokens = event.usage.input_tokens ?? 0;
+      response.output_tokens = event.usage.output_tokens ?? 0;
       continue;
     }
     if (event.type === 'content_block_start') {
