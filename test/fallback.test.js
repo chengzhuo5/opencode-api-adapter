@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages } from '../src/fallback.js';
+import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages, truncateHistory } from '../src/fallback.js';
 
 test('hasImageInput detects input_image blocks', () => {
   const body = { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }, { type: 'input_image', image_url: 'https://x/1.png' }] }] };
@@ -514,4 +514,54 @@ test('multimodal upgrade strips historical file_id images so ergou is not hit wi
   assert.ok(sent.every((item) => !JSON.stringify(item).includes('file_old')), 'historical file_id must not reach ergou');
   assert.equal(sent[0].content[1].text, '[image omitted]');
   assert.equal(sent[2].content[1].type, 'input_image', 'current image kept');
+});
+
+test('truncateHistory keeps latest N items and avoids orphan function_call_output at head', () => {
+  const input = [];
+  for (let i = 0; i < 20; i++) input.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: `m${i}` }] });
+  const { input: out, removed } = truncateHistory(input, 10);
+  assert.equal(out.length, 10);
+  assert.equal(removed, 10);
+  assert.equal(out[0].content[0].text, 'm10');
+  assert.equal(out[9].content[0].text, 'm19');
+
+  // 开头不能是孤立的 function_call_output
+  const withFco = [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'm0' }] },
+    { type: 'function_call', id: 'fc1', call_id: 'c1', name: 'sh', arguments: '{}' },
+    { type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'x' },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'a', annotations: [] }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'm4' }] },
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'a5', annotations: [] }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'm6' }] }
+  ];
+  const t2 = truncateHistory(withFco, 3);
+  assert.equal(t2.input[0].type, 'message', 'head must not be a function_call_output');
+  assert.equal(t2.input.length, 3);
+});
+
+test('custom provider request truncates history to maxHistoryMessages', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const history = [];
+  for (let i = 0; i < 15; i++) history.push({ type: 'message', role: 'user', content: [{ type: 'input_text', text: `m${i}` }] });
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key', maxHistoryMessages: 5 } }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-luna', stream: true, input: history })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://ergouapi.com/v1/responses');
+  assert.equal(calls[0].body.input.length, 5, 'history should be truncated to 5 items');
+  assert.equal(calls[0].body.input[0].content[0].text, 'm10');
 });

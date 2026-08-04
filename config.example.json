@@ -12,7 +12,8 @@
     "gpt-5.6-luna": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
-      "apiKeyEnv": "ERGOUAPI_API_KEY"
+      "apiKeyEnv": "ERGOUAPI_API_KEY",
+      "maxHistoryMessages": 10
     }
   }
 }

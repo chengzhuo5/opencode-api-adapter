@@ -85,6 +85,7 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 
 - `endpoint`：自定义服务商的 base URL（路由会自动拼接 `/responses` 或 `/messages`）
 - `apiKeyEnv`：该服务商 API key 对应的环境变量名；不设置则复用全局 `apiKeyEnv`
+- `maxHistoryMessages`：可选，转发前只保留最近 N 条消息（自定义服务商上下文窗口较小时使用，如 ergou 的 luna）；默认不截断
 - 优先级：自定义服务商 → `apiBaseUrl`（OpenCode）→ 协议降级（chat/completions）
 
 也可以通过环境变量或命令行指定配置：

@@ -4,7 +4,7 @@ import { resolveRoute, UnknownModelError } from './routes.js';
 import { sseEncode } from './sse.js';
 import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js';
 import { anthropicToResponsesObject, translateAnthropicStreamToResponses } from './translate/anthropicToResponses.js';
-import { maybeUpgradeModel, minimizeHistoryImages, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
+import { maybeUpgradeModel, minimizeHistoryImages, truncateHistory, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
 import { logEvent } from './logger.js';
 import { maybeCompressInput, loadOutput } from './compression.js';
 import { createLeanCtxClient } from './leanCtxClient.js';
@@ -91,6 +91,20 @@ async function forward(res, body, route, config, fetchImpl, compression) {
       endpoint: route.endpoint,
       ...(minimized.removedImages > 0 ? { historical_images_removed: minimized.removedImages } : {})
     });
+  }
+  const maxHistory = config.models?.[upgraded.model]?.maxHistoryMessages;
+  if (Number.isInteger(maxHistory) && maxHistory > 0) {
+    const truncated = truncateHistory(upgraded.input, maxHistory);
+    if (truncated.removed > 0) {
+      upgraded = { ...upgraded, input: truncated.input };
+      logEvent(config, {
+        event: 'context_truncation',
+        model: upgraded.model,
+        max_items: maxHistory,
+        original_items: truncated.original,
+        removed_items: truncated.removed
+      });
+    }
   }
   const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache, compression?.safety, compression?.stats);
   await forwardWithFallback(res, compressed, route, config, fetchImpl, body.model);

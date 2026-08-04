@@ -85,6 +85,7 @@ By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be
 
 - `endpoint`: base URL of the custom provider (the router appends `/responses` or `/messages`)
 - `apiKeyEnv`: environment variable holding the provider API key; falls back to the global `apiKeyEnv` when omitted
+- `maxHistoryMessages`: optional, keep only the latest N messages before forwarding (for providers with small context windows, e.g. ergou luna); no truncation by default
 - Priority: custom provider → `apiBaseUrl` (OpenCode) → protocol fallback (chat/completions)
 
 You can select a configuration file with an environment variable or CLI option:

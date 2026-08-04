@@ -81,6 +81,18 @@ export function minimizeHistoryImages(input) {
   return { input: out, removedImages };
 }
 
+/**
+ * 上下文截断：只保留最近 maxItems 条消息（自定义服务商上下文窗口较小时使用）。
+ * 保证截断后的开头不是孤立的 function_call_output，避免上游拒绝请求。
+ */
+export function truncateHistory(input, maxItems) {
+  const items = Array.isArray(input) ? input : [];
+  if (items.length <= maxItems) return { input, removed: 0 };
+  let start = items.length - maxItems;
+  while (start < items.length && items[start]?.type === 'function_call_output') start += 1;
+  return { input: items.slice(start), removed: start, original: items.length };
+}
+
 export function maybeUpgradeModel(body) {
   if (!body || !DEEPSEEK_MODELS.has(body.model)) return body;
   if (!hasImageInput(body)) return body;
