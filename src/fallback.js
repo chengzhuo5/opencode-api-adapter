@@ -109,6 +109,41 @@ export function minimizeHistoryImages(input) {
 }
 
 /**
+ * 非多模态模型（如 deepseek 无图请求）：剥离 input 里所有图片（消息 content 或工具输出），
+ * 避免截图 base64 以海量 token 发给不支持视觉的模型导致上下文超限。
+ */
+export function stripAllImages(input) {
+  const items = Array.isArray(input) ? input : [];
+  let removedImages = 0;
+  const stripable = (part) => isImagePart(part) && !Object.hasOwn(part, 'file_id');
+  const out = items.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    if (item.type === 'function_call_output' && Array.isArray(item.output)) {
+      const output = item.output.map((part) => {
+        if (stripable(part)) {
+          removedImages += 1;
+          return { type: 'input_text', text: '[image omitted]' };
+        }
+        return part;
+      });
+      return { ...item, output };
+    }
+    if (Array.isArray(item.content)) {
+      const content = item.content.map((part) => {
+        if (stripable(part)) {
+          removedImages += 1;
+          return { type: 'input_text', text: '[image omitted]' };
+        }
+        return part;
+      });
+      return { ...item, content };
+    }
+    return item;
+  });
+  return { input: out, removedImages };
+}
+
+/**
  * 上下文截断：只保留最近 maxItems 条消息（自定义服务商上下文窗口较小时使用）。
  * 保证截断后的开头不是孤立的 function_call_output，避免上游拒绝请求。
  */

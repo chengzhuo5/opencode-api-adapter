@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages, truncateHistory, relayError } from '../src/fallback.js';
+import { hasImageInput, maybeUpgradeModel, minimizeHistoryImages, truncateHistory, stripAllImages, relayError } from '../src/fallback.js';
 
 test('hasImageInput detects input_image blocks', () => {
   const body = { input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'x' }, { type: 'input_image', image_url: 'https://x/1.png' }] }] };
@@ -660,3 +660,55 @@ test('relayError adds readable message when upstream error body is empty', async
   assert.equal(JSON.parse(calls[1][1]).error.message, 'upstream 403 Forbidden');
 });
 
+test('stripAllImages removes every image from messages and tool outputs', () => {
+  const img = 'data:image/png;base64,AAAA';
+  const input = [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first' }, { type: 'input_image', image_url: img }] },
+    { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
+    { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: img }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'second' }] },
+    { type: 'function_call_output', id: 'fco_2', call_id: 'call_2', output: [{ type: 'input_image', file_id: 'file_ref' }] }
+  ];
+  const { input: out, removedImages } = stripAllImages(input);
+  assert.equal(removedImages, 2);
+  assert.equal(out[0].content[1].type, 'input_text');
+  assert.equal(out[0].content[1].text, '[image omitted]');
+  assert.equal(out[2].output[0].type, 'input_text');
+  assert.deepEqual(out[3], input[3]);
+  assert.equal(out[4].output[0].file_id, 'file_ref', 'file_id references must be kept for file_id compatibility');
+});
+
+test('deepseek request without current image strips historical screenshots before forwarding', async () => {
+  const calls = [];
+  const img = 'data:image/png;base64,' + 'A'.repeat(2000);
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, body: JSON.parse(init.body) });
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {}
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: true,
+        input: [
+          { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'view_image', arguments: '{}' },
+          { type: 'function_call_output', id: 'fco_1', call_id: 'call_1', output: [{ type: 'input_image', image_url: img }] },
+          { type: 'function_call', id: 'fc_2', call_id: 'call_2', name: 'shell_command', arguments: '{}' },
+          { type: 'function_call_output', id: 'fco_2', call_id: 'call_2', output: 'ran a command' },
+          { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'continue' }] }
+        ]
+      })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(calls.length, 1);
+  const sent = JSON.stringify(calls[0].body.input);
+  assert.ok(!sent.includes('base64'), 'screenshot base64 must not reach deepseek');
+  assert.equal(calls[0].body.input[1].output[0].text, '[image omitted]');
+});
