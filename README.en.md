@@ -88,7 +88,16 @@ By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be
 - `maxHistoryMessages`: optional, keep only the latest N messages before forwarding (for providers with small context windows, e.g. ergou luna); no truncation by default
 - Priority: custom provider → `apiBaseUrl` (OpenCode) → protocol fallback (chat/completions)
 
-Both `endpoint` and the global `apiBaseUrl` accept a **string or an array**: with an array, providers are tried in order and the first successful response wins (e.g. `"endpoint": ["https://ergouapi.com/v1", "https://backup.example/v1"]`).
+Both `endpoint` and the global `apiBaseUrl` accept a **string or an array**: with an array, providers are tried in order and the first successful response wins. Each element can be a string (uses the model/global default key) or an object `{ "url": "...", "apiKeyEnv": "..." }` to assign a dedicated key to that endpoint:
+
+```json
+{
+  "endpoint": [
+    { "url": "https://ergouapi.com/v1", "apiKeyEnv": "ERGOUAPI_API_KEY" },
+    "https://backup.example/v1"
+  ]
+}
+```
 
 You can select a configuration file with an environment variable or CLI option:
 

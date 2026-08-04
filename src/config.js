@@ -34,13 +34,24 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
   };
   const apiKey = env[config.apiKeyEnv];
   if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);
+  const normalizeEndpoint = (endpoint, defaultKey) => {
+    const mapOne = (item) => {
+      if (item && typeof item === 'object' && !Array.isArray(item)) {
+        return { ...item, apiKey: item.apiKeyEnv ? env[item.apiKeyEnv] : defaultKey };
+      }
+      return item;
+    };
+    if (Array.isArray(endpoint)) return endpoint.map(mapOne);
+    return mapOne(endpoint);
+  };
   const models = {};
   for (const [id, entry] of Object.entries(config.models || {})) {
     if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-      models[id] = { ...entry, apiKey: entry.apiKeyEnv ? env[entry.apiKeyEnv] : apiKey };
+      const entryKey = entry.apiKeyEnv ? env[entry.apiKeyEnv] : apiKey;
+      models[id] = { ...entry, apiKey: entryKey, endpoint: normalizeEndpoint(entry.endpoint, entryKey) };
     } else {
       models[id] = entry;
     }
   }
-  return { ...config, apiKey, models };
+  return { ...config, apiKey, models, apiBaseUrl: normalizeEndpoint(config.apiBaseUrl, apiKey) };
 }

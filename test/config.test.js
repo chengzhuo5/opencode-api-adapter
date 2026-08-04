@@ -45,3 +45,21 @@ test('resolves per-model api key from its own env var', () => {
   assert.equal(cfg.models['gpt-5.6-luna'].endpoint, 'https://ergouapi.com/v1');
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('resolves per-endpoint api keys from endpoint objects', () => {
+  const { dir, file } = makeConfig({
+    apiBaseUrl: [{ url: 'https://global-b/v1', apiKeyEnv: 'GLOBAL_B_KEY' }],
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: [
+      { url: 'https://ergou1/v1', apiKeyEnv: 'ERGO1_KEY' },
+      'https://ergou2/v1'
+    ], apiKeyEnv: 'ERGOUAPI_API_KEY' } }
+  });
+  const cfg = loadConfig({
+    configPath: file,
+    env: { OPENCODE_GO_API_KEY: 'gk', ERGOUAPI_API_KEY: 'ek', ERGO1_KEY: 'ek-1', GLOBAL_B_KEY: 'gk-b' }
+  });
+  assert.equal(cfg.models['gpt-5.6-luna'].endpoint[0].apiKey, 'ek-1');
+  assert.equal(cfg.models['gpt-5.6-luna'].endpoint[1], 'https://ergou2/v1');
+  assert.equal(cfg.apiBaseUrl[0].apiKey, 'gk-b');
+  rmSync(dir, { recursive: true, force: true });
+});

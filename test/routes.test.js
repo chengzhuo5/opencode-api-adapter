@@ -72,6 +72,26 @@ test('resolves ordered providers from array endpoints', () => {
   assert.equal(route.fallbackApiKey, 'ek');
 });
 
+test('array endpoint objects carry their own api keys', () => {
+  const cfg = {
+    apiBaseUrl: ['https://global-a/v1', { url: 'https://global-b/v1', apiKey: 'gk-b' }],
+    apiKey: 'gk',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: [
+      { url: 'https://ergou1/v1', apiKey: 'ek-1' },
+      'https://ergou2/v1',
+      { url: 'https://ergou3/v1', apiKey: 'ek-3' }
+    ], apiKey: 'ek' } }
+  };
+  const route = resolveRoute(cfg, 'gpt-5.6-luna');
+  assert.deepEqual(route.providers.map((p) => ({ endpoint: p.endpoint, apiKey: p.apiKey })), [
+    { endpoint: 'https://ergou1/v1/responses', apiKey: 'ek-1' },
+    { endpoint: 'https://ergou2/v1/responses', apiKey: 'ek' },
+    { endpoint: 'https://ergou3/v1/responses', apiKey: 'ek-3' },
+    { endpoint: 'https://global-a/v1/responses', apiKey: 'gk' },
+    { endpoint: 'https://global-b/v1/responses', apiKey: 'gk-b' }
+  ]);
+});
+
 test('lists routed models', () => {
   assert.ok(listRoutedModels(config).includes('gpt-5.6-luna'));
   assert.ok(listRoutedModels(config).includes('qwen3.6-plus'));

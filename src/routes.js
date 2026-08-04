@@ -33,12 +33,19 @@ export function resolveRoute(config, model) {
   if (!upstream) throw new UnknownModelError(model);
   const effective = upstream === 'messages' ? 'messages' : 'responses';
   const suffix = effective === 'messages' ? 'messages' : 'responses';
-  const toBases = (value) => (Array.isArray(value) ? value : [value]).filter((v) => typeof v === 'string' && v);
+  const toBases = (value) => (Array.isArray(value) ? value : [value]).filter((v) => (
+    (typeof v === 'string' && v) || (v && typeof v === 'object' && typeof v.url === 'string' && v.url)
+  ));
   const customBases = toBases(entry?.endpoint);
   const globalBases = toBases(config.apiBaseUrl);
+  const toProvider = (base, defaultKey) => (
+    typeof base === 'object'
+      ? { endpoint: `${base.url}/${suffix}`, apiKey: base.apiKey ?? defaultKey }
+      : { endpoint: `${base}/${suffix}`, apiKey: defaultKey }
+  );
   const providers = [
-    ...customBases.map((base) => ({ endpoint: `${base}/${suffix}`, apiKey: entry?.apiKey ?? config.apiKey })),
-    ...globalBases.map((base) => ({ endpoint: `${base}/${suffix}`, apiKey: config.apiKey }))
+    ...customBases.map((base) => toProvider(base, entry?.apiKey ?? config.apiKey)),
+    ...globalBases.map((base) => toProvider(base, config.apiKey))
   ];
   const seen = new Set();
   const unique = providers.filter((p) => {
