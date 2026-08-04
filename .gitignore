@@ -12,3 +12,4 @@ ctx-store/
 logs/
 adapter.log
 adapter.err.log
+.tokensave/

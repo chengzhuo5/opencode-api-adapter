@@ -49,7 +49,15 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
       }
       sendJson(res, 404, { error: { message: `not found: ${req.method} ${url.pathname}` } });
     } catch (error) {
-      if (error instanceof UnknownModelError) sendJson(res, 400, { error: { message: error.message } });
+            if (res.headersSent || res.writableEnded) {
+        logEvent(config, {
+          event: 'stream_aborted',
+          reason: error?.message || 'streaming relay error'
+        });
+        try { res.end(); } catch { /* noop */ }
+        return;
+      }
+if (error instanceof UnknownModelError) sendJson(res, 400, { error: { message: error.message } });
       else sendJson(res, 500, { error: { message: error.message || 'internal error' } });
     }
   });

@@ -321,9 +321,14 @@ export async function pipeBody(body, res) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+        if (res.destroyed) break;
       res.write(Buffer.from(value));
     }
-  } finally { reader.releaseLock(); }
+      } catch (error) {
+      // Upstream stream aborted mid-flight; teardown instead of bubbling up so
+      // the outer catch never tries to write a second response.
+      try { res.end(); } catch { /* noop */ }
+} finally { reader.releaseLock(); }
 }
 
 export function sendJson(res, status, data) {
