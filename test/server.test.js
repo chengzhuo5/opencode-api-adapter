@@ -362,3 +362,18 @@ test('normalizeResponsesRequest drops reasoning items from input', () => {
   assert.equal(request.input.some((item) => item.type === 'reasoning'), false, 'reasoning items must not be forwarded');
   assert.deepEqual(request.input.map((i) => i.type), ['message', 'function_call', 'function_call_output']);
 });
+
+test('normalizeResponsesRequest maps custom tool items to function items', () => {
+  const request = normalizeResponsesRequest({
+    model: 'gpt-5.6-luna',
+    input: [
+      { type: 'custom_tool_call', id: 'ctc_1', call_id: 'call_1', name: 'apply_patch', input: { patch: 'x' } },
+      { type: 'custom_tool_call_output', id: 'ctco_1', call_id: 'call_1', output: 'ok' }
+    ]
+  });
+  assert.deepEqual(request.input, [
+    { type: 'function_call', id: 'ctc_1', call_id: 'call_1', name: 'apply_patch', arguments: '{"patch":"x"}' },
+    { type: 'function_call_output', id: 'ctco_1', call_id: 'call_1', output: 'ok' }
+  ]);
+});
+

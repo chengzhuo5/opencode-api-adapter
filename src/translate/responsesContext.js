@@ -64,6 +64,30 @@ function normalizeResponsesItem(item) {
     return output;
   }
 
+  // Old Codex threads store custom tools (e.g. apply_patch) as custom_tool_call
+  // items with the payload in "input". Normalize them to standard function
+  // items so third-party Responses endpoints and the chat fallback accept them.
+  if (item.type === 'custom_tool_call') {
+    const call = {
+      type: 'function_call',
+      call_id: item.call_id,
+      name: normalizeToolName(item.name || ''),
+      arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.input ?? {})
+    };
+    copyIfPresent(call, item, 'id');
+    return call;
+  }
+
+  if (item.type === 'custom_tool_call_output') {
+    const output = {
+      type: 'function_call_output',
+      call_id: item.call_id,
+      output: item.output
+    };
+    copyIfPresent(output, item, 'id');
+    return output;
+  }
+
   // OpenAI-compatible Responses endpoints (including ergou relays) reject
   // `reasoning` as an input item and treat its id as a stored-item reference,
   // which 404s/400s when `store` is false. Reasoning is an output artifact, so

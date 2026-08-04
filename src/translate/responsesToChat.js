@@ -22,7 +22,7 @@ export function responsesToolsToChat(tools) {
 }
 
 export function responsesToChatRequest(body) {
-  const messages = [];
+  let messages = [];
   let pendingReasoning = '';
   if (body.instructions) messages.push({ role: 'system', content: body.instructions });
   for (const item of inputItems(body.input)) {
@@ -35,16 +35,12 @@ export function responsesToChatRequest(body) {
       pendingReasoning = (pendingReasoning || '') + reasoningText(item);
       continue;
     }
-    if (item.type === 'function_call') {
-      appendChatToolCall(messages, {
-        id: item.call_id,
-        type: 'function',
-        function: { name: item.name || '', arguments: item.arguments || '' }
-      }, pendingReasoning);
+    if (item.type === 'function_call' || item.type === 'custom_tool_call') {
+      appendChatToolCall(messages, chatToolCall(item), pendingReasoning);
       pendingReasoning = '';
       continue;
     }
-    if (item.type === 'function_call_output') {
+    if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
       messages.push({
         role: 'tool',
         tool_call_id: item.call_id,
@@ -81,11 +77,15 @@ export function responsesToChatRequest(body) {
       messages.push(assistant);
       continue;
     }
-    messages.push({
-      role: role === 'developer' ? 'system' : role,
-      content: textFromContent(item.content)
-    });
+    const text = textFromContent(item.content);
+    if (text) {
+      messages.push({
+        role: role === 'developer' ? 'system' : role,
+        content: text
+      });
+    }
   }
+  messages = sanitizeChatToolMessages(messages);
   const request = {
     model: body.model,
     messages,
@@ -119,4 +119,64 @@ function appendChatToolCall(messages, toolCall, reasoning = '') {
   const assistant = { role: 'assistant', content: null, tool_calls: [toolCall] };
   assistant.reasoning_content = reasoning || '';
   messages.push(assistant);
+}
+
+function chatToolCall(item) {
+  if (item.type === 'custom_tool_call') {
+    return {
+      id: item.call_id,
+      type: 'function',
+      function: {
+        name: item.name || '',
+        arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.input ?? {})
+      }
+    };
+  }
+  return {
+    id: item.call_id,
+    type: 'function',
+    function: { name: item.name || '', arguments: item.arguments || '' }
+  };
+}
+
+/**
+ * Chat Completions requires every assistant tool_calls message to be answered
+ * by tool messages before any other role appears. Old Codex threads can replay
+ * interrupted or interleaved tool rounds (cancelled runs, custom tool items),
+ * so repair the ordering: drop orphan tool messages, strip unanswered
+ * tool_calls, and remove assistant messages left without content.
+ */
+export function sanitizeChatToolMessages(messages) {
+  const out = [];
+  let declared = new Map();
+  for (const message of messages) {
+    if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length) {
+      settleUnansweredToolCalls(declared);
+      declared = new Map(message.tool_calls.map((call) => [call.id, message]));
+      out.push(message);
+      continue;
+    }
+    if (message.role === 'tool') {
+      if (declared.has(message.tool_call_id)) {
+        declared.delete(message.tool_call_id);
+        out.push(message);
+      }
+      continue;
+    }
+    settleUnansweredToolCalls(declared);
+    declared = new Map();
+    out.push(message);
+  }
+  settleUnansweredToolCalls(declared);
+  for (let i = out.length - 1; i >= 0; i--) {
+    const message = out[i];
+    if (message.role === 'assistant' && !(message.tool_calls || []).length && !message.content) out.splice(i, 1);
+  }
+  return out;
+}
+
+function settleUnansweredToolCalls(declared) {
+  if (!declared.size) return;
+  const assistant = declared.values().next().value;
+  assistant.tool_calls = assistant.tool_calls.filter((call) => !declared.has(call.id));
 }

@@ -43,3 +43,45 @@ test('converts native Responses function items into Anthropic tool blocks', () =
     { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'ok' }] }
   ]);
 });
+
+test('converts custom tool items into anthropic tool blocks', () => {
+  const request = responsesToAnthropicRequest({
+    model: 'minimax-m3',
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'patch it' }] },
+      { type: 'custom_tool_call', call_id: 'call_patch', name: 'apply_patch', input: { patch: 'x' } },
+      { type: 'function_call', call_id: 'call_shell', name: 'shell_command', arguments: '{"command":"pwd"}' },
+      { type: 'custom_tool_call_output', call_id: 'call_patch', output: 'ok' },
+      { type: 'function_call_output', call_id: 'call_shell', output: 'done' }
+    ]
+  });
+  assert.deepEqual(request.messages[1], {
+    role: 'assistant',
+    content: [
+      { type: 'tool_use', id: 'call_patch', name: 'apply_patch', input: { patch: 'x' } },
+      { type: 'tool_use', id: 'call_shell', name: 'shell_command', input: { command: 'pwd' } }
+    ]
+  });
+  assert.deepEqual(request.messages[2].content, [
+    { type: 'tool_result', tool_use_id: 'call_patch', content: 'ok' },
+    { type: 'tool_result', tool_use_id: 'call_shell', content: 'done' }
+  ]);
+});
+
+test('repairs dangling tool_use blocks in replayed history', () => {
+  const request = responsesToAnthropicRequest({
+    model: 'minimax-m3',
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'first' }] },
+      { type: 'function_call', call_id: 'call_a', name: 'sh', arguments: '{}' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'resume' }] },
+      { type: 'function_call', call_id: 'call_b', name: 'sh', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_b', output: 'ok' }
+    ]
+  });
+  const assistant = request.messages.find((m) => m.role === 'assistant');
+  assert.deepEqual(assistant.content.map((b) => b.id), ['call_b']);
+  const results = request.messages.flatMap((m) => (m.role === 'user' ? m.content : [])).filter((b) => b.type === 'tool_result');
+  assert.deepEqual(results.map((b) => b.tool_use_id), ['call_b']);
+});
+

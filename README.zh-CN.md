@@ -9,7 +9,7 @@
 - Chat Completions 响应和 SSE 会转换回 Responses 格式。
 - MiniMax/Qwen 的 Anthropic Messages 路由保持独立，不参与 Responses→Chat fallback。
 - DeepSeek V4 Pro/Flash 在最新用户消息中检测到 `input_image`、`image_url` 或 `file_id` 时自动切换到 `gpt-5.6-luna`；旧历史消息中的图片不会触发降级。
-- 跨协议上下文规范化：工具调用、`reasoning_content`、旧的重复工具名和历史内部字段都会被清理或转换。
+- 跨协议上下文规范化：工具调用（含旧会话中的 `custom_tool_call`/`custom_tool_call_output`）、`reasoning_content`、旧的重复工具名和历史内部字段都会被清理或转换；对中断或错位的工具轮次自动修复，保证上游要求的 tool_calls ↔ tool 消息配对。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
 - 支持作为 CLI 启动，也可以导入 `createRouter` 构建自己的 Node HTTP 服务。
 

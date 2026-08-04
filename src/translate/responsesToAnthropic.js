@@ -13,7 +13,7 @@ export function responsesToolsToAnthropic(tools) {
 
 export function responsesToAnthropicRequest(body) {
   const system = [];
-  const messages = [];
+  let messages = [];
   if (body.instructions) system.push({ type: 'text', text: body.instructions });
   for (const item of inputItems(body.input)) {
     if (typeof item === 'string') {
@@ -22,16 +22,16 @@ export function responsesToAnthropicRequest(body) {
     }
     if (!item || typeof item !== 'object') continue;
     if (item.type === 'reasoning') continue;
-    if (item.type === 'function_call') {
+    if (item.type === 'function_call' || item.type === 'custom_tool_call') {
       appendAnthropicToolUse(messages, {
         type: 'tool_use',
         id: item.call_id,
         name: item.name || '',
-        input: safeJsonParse(item.arguments || '{}')
+        input: anthropicToolInput(item)
       });
       continue;
     }
-    if (item.type === 'function_call_output') {
+    if (item.type === 'function_call_output' || item.type === 'custom_tool_call_output') {
       appendAnthropicToolResult(messages, {
         type: 'tool_result',
         tool_use_id: item.call_id,
@@ -73,8 +73,10 @@ export function responsesToAnthropicRequest(body) {
       messages.push({ role: 'assistant', content });
       continue;
     }
-    messages.push({ role: 'user', content: [{ type: 'text', text: textFromContent(item.content) }] });
+    const text = textFromContent(item.content);
+    if (text) messages.push({ role: 'user', content: [{ type: 'text', text }] });
   }
+  messages = sanitizeAnthropicToolMessages(messages);
   const request = {
     model: body.model,
     max_tokens: body.max_output_tokens || 8192,
@@ -112,4 +114,66 @@ function safeJsonParse(value) {
   } catch {
     return {};
   }
+}
+
+function anthropicToolInput(item) {
+  if (item.input !== undefined) return item.input;
+  return safeJsonParse(item.arguments || '{}');
+}
+
+/**
+ * Anthropic requires every assistant tool_use block to be answered by a
+ * tool_result in the immediately following user message. Old Codex threads can
+ * replay interrupted or interleaved tool rounds, so repair the ordering: drop
+ * orphan tool_result blocks, strip unanswered tool_use blocks, and remove
+ * assistant messages left without content.
+ */
+export function sanitizeAnthropicToolMessages(messages) {
+  const out = [];
+  let pending = new Map();
+  const settle = () => {
+    if (!pending.size) return;
+    const assistant = pending.values().next().value;
+    assistant.content = assistant.content.filter((block) => block.type !== 'tool_use' || !pending.has(block.id));
+    pending.clear();
+  };
+  for (const message of messages) {
+    if (message.role === 'assistant') {
+      settle();
+      for (const block of message.content || []) {
+        if (block.type === 'tool_use') pending.set(block.id, message);
+      }
+      out.push(message);
+      continue;
+    }
+    if (message.role === 'user' && Array.isArray(message.content)) {
+      const hasResults = message.content.some((block) => block.type === 'tool_result');
+      if (pending.size && !hasResults) settle();
+      const kept = [];
+      for (const block of message.content) {
+        if (block.type === 'tool_result') {
+          if (pending.has(block.tool_use_id)) {
+            pending.delete(block.tool_use_id);
+            kept.push(block);
+          }
+        } else {
+          kept.push(block);
+        }
+      }
+      if (kept.length) {
+        message.content = kept;
+        out.push(message);
+      }
+      if (pending.size) settle();
+      continue;
+    }
+    settle();
+    out.push(message);
+  }
+  settle();
+  for (let i = out.length - 1; i >= 0; i--) {
+    const message = out[i];
+    if (message.role === 'assistant' && !(message.content || []).length) out.splice(i, 1);
+  }
+  return out;
 }
