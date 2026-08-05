@@ -30,6 +30,29 @@ test('routes deepseek custom endpoint to official responses', () => {
   assert.equal(route.endpoint, 'https://api.deepseek.com/v1/responses');
 });
 
+test('routes all gpt models to responses', () => {
+  for (const id of ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol']) {
+    const route = resolveRoute(config, id);
+    assert.equal(route.upstream, 'responses');
+    assert.equal(route.endpoint, 'https://opencode.ai/zen/go/v1/responses');
+  }
+});
+
+test('gpt models route to ergou with custom endpoint and key', () => {
+  const cfg = {
+    apiBaseUrl: 'https://opencode.ai/zen/go/v1',
+    models: {
+      'gpt-5.5': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key', maxHistoryMessages: 10 },
+      'gpt-5.6-terra': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key', maxHistoryMessages: 10 }
+    }
+  };
+  const r1 = resolveRoute(cfg, 'gpt-5.5');
+  assert.equal(r1.endpoint, 'https://ergouapi.com/v1/responses');
+  assert.equal(r1.apiKey, 'ergou-key');
+  const r2 = resolveRoute(cfg, 'gpt-5.6-terra');
+  assert.equal(r2.endpoint, 'https://ergouapi.com/v1/responses');
+});
+
 test('routes minimax to messages', () => {
   const route = resolveRoute(config, 'minimax-m3');
   assert.equal(route.endpoint, 'https://opencode.ai/zen/go/v1/messages');

@@ -1,5 +1,10 @@
 export const DEFAULT_MODEL_ROUTES = {
+  'gpt-5.4-mini': 'responses',
+  'gpt-5.4': 'responses',
+  'gpt-5.5': 'responses',
+  'gpt-5.6-terra': 'responses',
   'gpt-5.6-luna': 'responses',
+  'gpt-5.6-sol': 'responses',
   'grok-4.5': 'responses',
   'glm-5.2': 'responses',
   'glm-5.1': 'responses',
