@@ -75,7 +75,7 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 
 ### 自定义服务商（模型级端点与通配符）
 
-默认所有模型都路由到 `apiBaseUrl`（OpenCode Go）。任何模型都可以覆盖为其他服务商，且该服务商**优先级高于 OpenCode**——失败时自动降级到 OpenCode，再降级到 chat/completions。多个模型使用同一服务商时用 `modelPatterns` 通配（`*` 匹配任意串，`?` 匹配单字符）：
+默认所有模型都路由到 `apiBaseUrl`（OpenCode Go）。任何模型都可以覆盖为其他服务商。**模型配置了自定义 `endpoint` 后只使用该服务商（数组按序逐个尝试），不再自动追加全局 `apiBaseUrl` 兜底**——例如 gpt 系列只走 ergou，opencode 不支持 gpt-5.6-sol 时也不会误降级过去。多个模型使用同一服务商时用 `modelPatterns` 通配（`*` 匹配任意串，`?` 匹配单字符）：
 
 ```json
 {
@@ -96,7 +96,7 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 - `apiKeyEnv`：该服务商 API key 对应的环境变量名；不设置则复用全局 `apiKeyEnv`
 - `maxHistoryMessages`：可选，转发前只保留最近 N 条消息（自定义服务商上下文窗口较小时使用，如 ergou 的 luna）；默认不截断
 - `contextWindow`：可选，覆盖该模型在 catalog 中声明的上下文窗口（Codex 用它决定何时压缩）。ergou 的 GPT 系列实际窗口为 353K，已内置为默认值
-- 优先级：自定义服务商 → `apiBaseUrl`（OpenCode）→ 协议降级（chat/completions）
+- 优先级：自定义服务商（存在时独占）→ `apiBaseUrl`（仅未配置自定义端点的模型）→ 协议降级（chat/completions，仅当 `apiBaseUrl` 存在时可用；`apiBaseUrl` 可设为 `null` 彻底关闭全局兜底）
 
 `endpoint` 和全局 `apiBaseUrl` 都支持**字符串或数组**：数组时按顺序逐个尝试，第一个成功响应的生效。每个元素可以是字符串（用模型/全局默认 key）或对象 `{ "url": "...", "apiKeyEnv": "..." }`（为该端点指定独立 key）：
 

@@ -74,10 +74,12 @@ export function resolveRoute(config, model) {
       ? { endpoint: `${base.url}/${suffix}`, apiKey: base.apiKey ?? defaultKey }
       : { endpoint: `${base}/${suffix}`, apiKey: defaultKey }
   );
-  const providers = [
-    ...customBases.map((base) => toProvider(base, entry?.apiKey ?? config.apiKey)),
-    ...globalBases.map((base) => toProvider(base, config.apiKey))
-  ];
+  // 自定义 provider（模型级 endpoint）存在时不再追加全局 apiBaseUrl：
+  // 有模型级端点说明用户已为该模型指定服务商，opencode 全局兜底不适用
+  // （例如 gpt-5.6-sol 只存在于 ergou，opencode 不支持，fallback 过去只会 401）。
+  const providers = customBases.length > 0
+    ? customBases.map((base) => toProvider(base, entry?.apiKey ?? config.apiKey))
+    : globalBases.map((base) => toProvider(base, config.apiKey));
   const seen = new Set();
   const unique = providers.filter((p) => {
     if (seen.has(p.endpoint)) return false;

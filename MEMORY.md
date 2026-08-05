@@ -163,3 +163,15 @@
 - **验证**：服务重启后真实流量 deepseek-v4-flash `context_compression reason=ok`，单次 tokens_saved≈100K（66%），累计 total_tokens_saved≈757K；构造 gpt-5.6-luna 小请求也 outputs_compressed=1。
 - **注意**：`nssm get AppEnvironmentExtra` 会把服务环境里所有 key 明文打到终端/会话记录，排查时避免直接输出；若担心泄露需轮换 key。
 - **其他观察**：gpt-5.6-sol 正大量 502/500（ergou）与 401（opencode），熔断器已 open opencode 端点；与压缩无关，待排查。
+
+
+## 2026-08-05：路由语义变更（custom 独占）+ gpt-5.6-sol 排查 + 测试污染坑
+
+- **新路由语义**（用户要求"gpt 系列优先 ergou 而不是 opencode"）：
+  - `resolveRoute`：模型配置了自定义 `endpoint` 后，providers **只含自定义端点（数组按序）**，不再追加全局 `apiBaseUrl`。未配置自定义端点的模型才用全局。
+  - `config.json` 的 `apiBaseUrl` 可设为 `null`：彻底关闭全局/chat 兜底。`fallback.js` 新增 `hasChatFallback()`，`apiBaseUrl` 为空时不再拼 `null/chat/completions`，而是透传最后一个 provider 的真实错误（http_error 用 relayError 原样返回，网络错误返回 502）。
+  - file_id 跳过逻辑改为：仅当"自定义 provider 之外还存在全局 provider"时才跳过自定义端。
+- **gpt-5.6-sol 排查结论**：ergou 有 sol 且流式 200；**opencode 模型列表无 sol**（`Model gpt-5.6-sol is not supported` 401），所以旧语义下 ergou 一失败就 fallback 到 opencode 必然报"不支持该模型"。opencode 对 gpt-5.6-luna 还会 fetch 断连；deepseek-v4-flash 在 opencode /responses 200、/chat/completions 401（同一 key）。新语义后 gpt 只走 ergou，不再碰 opencode。
+- **测试污染坑（重要）**：`fallback.js` 模块级 `unsupportedResponses` 缓存跨测试共享。语义变更后"custom 400 → lastProvider"会把模型永久缓存为 unsupported，且旧的 unsupported 测试结束不清缓存，导致后续所有同模型测试直接走 chat（表现为 calls=[chat]、Cannot read 'includes' 等怪错）。修复：相关测试结束加 `clearUnsupportedCache()`；400 用例改 500 避免入缓存。
+- **服务加载**：服务进程需 Restart-Service 才加载新代码（热加载只换配置）。重启后实测：deepseek→opencode 200、gpt-5.6-luna→ergou 200，无 chat 兜底。165 测试全过。
+- config.toml 当前是 deepseek（用户因报错切回）；gpt 系列要恢复可在 admin「Codex 配置」一键 apply minar_route。

@@ -328,6 +328,7 @@ test('remembers unsupported responses endpoint for subsequent requests', async (
   assert.equal(calls[0].url, 'https://x/v1/responses');
   assert.equal(calls[1].url, 'https://x/v1/chat/completions');
   assert.equal(calls[2].url, 'https://x/v1/chat/completions');
+  clearUnsupportedCache();
 });
 
 test('does not cache transient responses failures like 500', async () => {
@@ -368,6 +369,7 @@ test('logs responses_unsupported only once per model', async () => {
   });
   const unsupported = events.filter((e) => e.event === 'api_fallback' && e.reason === 'responses_unsupported');
   assert.equal(unsupported.length, 1, 'expected exactly one responses_unsupported log');
+  clearUnsupportedCache();
 });
 
 
@@ -389,15 +391,15 @@ test('compression is applied before forwarding and falls back when daemon is dow
   assert.equal(calls[0].body.input[0].role, 'user');
 });
 
-test('provider fallback tries custom endpoint first, then opencode responses', async () => {
+test('provider fallback tries custom endpoint first, then chat when no global responses provider', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, auth: init.headers.authorization });
     if (url === 'https://ergouapi.com/v1/responses') {
-      return new Response(JSON.stringify({ error: { message: 'bad model' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ error: { message: 'down' } }), { status: 500, headers: { 'content-type': 'application/json' } });
     }
-    if (url === 'https://x/v1/responses') {
-      return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), { status: 200, headers: { 'content-type': 'application/json' } });
+    if (url === 'https://x/v1/chat/completions') {
+      return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'gpt-5.6-luna', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     throw new Error(`unexpected url: ${url}`);
   };
@@ -407,16 +409,18 @@ test('provider fallback tries custom endpoint first, then opencode responses', a
     models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
   }, fetchImpl, async (base) => {
     const res = await fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] }) });
-    assert.equal(res.status, 200);
+    const data = await res.json();
+    assert.equal(data.object, 'response');
   });
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 2, 'custom endpoint then chat fallback');
   assert.equal(calls[0].url, 'https://ergouapi.com/v1/responses');
   assert.equal(calls[0].auth, 'Bearer ergou-key');
-  assert.equal(calls[1].url, 'https://x/v1/responses');
+  assert.equal(calls[1].url, 'https://x/v1/chat/completions');
   assert.equal(calls[1].auth, 'Bearer k');
+  clearUnsupportedCache();
 });
 
-test('provider fallback goes to chat when both providers fail', async () => {
+test('provider fallback goes to chat when custom provider fails', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, auth: init.headers.authorization });
@@ -436,7 +440,6 @@ test('provider fallback goes to chat when both providers fail', async () => {
   });
   assert.deepEqual(calls.map((c) => c.url), [
     'https://ergouapi.com/v1/responses',
-    'https://x/v1/responses',
     'https://x/v1/chat/completions'
   ]);
 });
@@ -503,7 +506,7 @@ test('logs include full endpoint URLs on fallback and multimodal events', async 
   assert.equal(result.fallback_url, 'https://opencode.example/v1/chat/completions', 'api_fallback_result should carry the chat full URL');
 });
 
-test('file_id image requests skip custom provider and go to opencode', async () => {
+test('file_id image requests use the custom provider when no global provider is configured', async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, auth: init.headers.authorization });
@@ -525,8 +528,8 @@ test('file_id image requests skip custom provider and go to opencode', async () 
     });
     assert.equal(res.status, 200);
   });
-  assert.deepEqual(calls.map((c) => c.url), ['https://x/v1/responses'], 'file_id image must route to opencode, not ergou');
-  assert.equal(calls[0].auth, 'Bearer k');
+  assert.deepEqual(calls.map((c) => c.url), ['https://ergouapi.com/v1/responses'], 'file_id image must route to the model custom provider');
+  assert.equal(calls[0].auth, 'Bearer ergou-key');
 });
 
 test('minimizeHistoryImages keeps latest image and strips historical ones', () => {

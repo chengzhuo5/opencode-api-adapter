@@ -11,6 +11,13 @@ const unsupportedResponses = new Set();
 const unsupportedNotified = new Set();
 const UNSUPPORTED_STATUSES = new Set([400, 404, 405]);
 
+/** 是否存在可用的全局 chat 兜底（apiBaseUrl 配置且非空）。 */
+function hasChatFallback(config) {
+  const base = config?.apiBaseUrl;
+  if (Array.isArray(base)) return base.some((b) => (typeof b === 'string' ? b : b?.url));
+  return Boolean(base);
+}
+
 export function clearUnsupportedCache() {
   unsupportedResponses.clear();
   unsupportedNotified.clear();
@@ -185,7 +192,11 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
         fallback_endpoint: 'chat/completions'
       });
     }
-    await forwardChat(res, body, config, fetchImpl, displayModel, options);
+    if (hasChatFallback(config)) {
+      await forwardChat(res, body, config, fetchImpl, displayModel, options);
+    } else {
+      sendJson(res, 502, { error: { message: `${body.model} responses unsupported and no chat fallback configured` } });
+    }
     return;
   }
   let providers = Array.isArray(route.providers) && route.providers.length
@@ -194,8 +205,11 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
         { endpoint: route.endpoint, apiKey: route.apiKey ?? config.apiKey },
         ...(route.fallbackEndpoint ? [{ endpoint: route.fallbackEndpoint, apiKey: route.fallbackApiKey ?? config.apiKey }] : [])
       ];
-  if (hasFileIdInput(body) && providers.length > 1) {
-    const skip = Math.min(route.customProviderCount ?? (providers.length > 1 ? 1 : 0), providers.length - 1);
+  // file_id 图片只在“自定义 provider 之外还存在全局 provider”时才跳过自定义端：
+  // 模型已明确指定服务商（如 gpt-* → ergou）时不再试图绕到全局 opencode。
+  const customCount = route.customProviderCount ?? 0;
+  if (hasFileIdInput(body) && customCount > 0 && providers.length > customCount) {
+    const skip = Math.min(customCount, providers.length - 1);
     logEvent(config, {
       event: 'file_id_compat',
       model: displayModel,
@@ -219,7 +233,11 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
         fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
       });
       if (lastProvider) {
-        await forwardChat(res, body, config, fetchImpl, displayModel, options);
+        if (hasChatFallback(config)) {
+          await forwardChat(res, body, config, fetchImpl, displayModel, options);
+        } else {
+          sendJson(res, 502, { error: { message: `all providers skipped and no chat fallback configured for ${displayModel}` } });
+        }
         return;
       }
       continue;
@@ -240,7 +258,11 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
         fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
       });
       if (lastProvider) {
-        await forwardChat(res, body, config, fetchImpl, displayModel, options);
+        if (hasChatFallback(config)) {
+          await forwardChat(res, body, config, fetchImpl, displayModel, options);
+        } else {
+          sendJson(res, 502, { error: { message: `upstream network error and no chat fallback configured for ${displayModel}` } });
+        }
         return;
       }
       continue;
@@ -292,13 +314,21 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
       fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
     });
     if (lastProvider) {
-      await forwardChat(res, body, config, fetchImpl, displayModel, options);
+      if (hasChatFallback(config)) {
+        await forwardChat(res, body, config, fetchImpl, displayModel, options);
+      } else {
+        await relayError(res, upstream);
+      }
       return;
     }
   }
 }
 
 async function forwardChat(res, body, config, fetchImpl, displayModel, options = {}) {
+  if (!hasChatFallback(config)) {
+    sendJson(res, 502, { error: { message: `chat fallback not configured for ${displayModel}` } });
+    return;
+  }
   const chatBody = responsesToChatRequest(body);
   const headers = { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
   const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);

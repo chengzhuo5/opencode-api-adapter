@@ -68,7 +68,7 @@ test('modelPatterns wildcard routes all gpt models to ergou', () => {
     assert.equal(route.apiKey, 'ergou-key');
     assert.equal(route.entry.maxHistoryMessages, 10);
     assert.equal(route.entry.contextWindow, 353000);
-    assert.equal(route.fallbackEndpoint, 'https://opencode.ai/zen/go/v1/responses');
+    assert.equal(route.fallbackEndpoint, null, 'custom provider must not fall back to global opencode');
   }
 });
 
@@ -114,7 +114,7 @@ test('throws for unknown model', () => {
   assert.throws(() => resolveRoute(config, 'nope'), UnknownModelError);
 });
 
-test('routes model with custom endpoint to provider and keeps opencode fallback', () => {
+test('routes model with custom endpoint to provider without global opencode fallback', () => {
   const cfg = {
     apiBaseUrl: 'https://opencode.ai/zen/go/v1',
     apiKey: 'opencode-key',
@@ -124,8 +124,8 @@ test('routes model with custom endpoint to provider and keeps opencode fallback'
   assert.equal(route.upstream, 'responses');
   assert.equal(route.endpoint, 'https://ergouapi.com/v1/responses');
   assert.equal(route.apiKey, 'ergou-key');
-  assert.equal(route.fallbackEndpoint, 'https://opencode.ai/zen/go/v1/responses');
-  assert.equal(route.fallbackApiKey, 'opencode-key');
+  assert.equal(route.fallbackEndpoint, null);
+  assert.equal(route.fallbackApiKey, null);
 });
 
 test('route without custom endpoint has no provider fallback', () => {
@@ -135,7 +135,7 @@ test('route without custom endpoint has no provider fallback', () => {
   assert.equal(route.apiKey, 'k');
 });
 
-test('resolves ordered providers from array endpoints', () => {
+test('resolves ordered providers from array endpoints without global fallback', () => {
   const cfg = {
     apiBaseUrl: ['https://global-a/v1', 'https://global-b/v1'],
     apiKey: 'gk',
@@ -144,9 +144,7 @@ test('resolves ordered providers from array endpoints', () => {
   const route = resolveRoute(cfg, 'gpt-5.6-luna');
   assert.deepEqual(route.providers.map((p) => p.endpoint), [
     'https://ergou1/v1/responses',
-    'https://ergou2/v1/responses',
-    'https://global-a/v1/responses',
-    'https://global-b/v1/responses'
+    'https://ergou2/v1/responses'
   ]);
   assert.equal(route.endpoint, 'https://ergou1/v1/responses');
   assert.equal(route.apiKey, 'ek');
@@ -154,7 +152,7 @@ test('resolves ordered providers from array endpoints', () => {
   assert.equal(route.fallbackApiKey, 'ek');
 });
 
-test('array endpoint objects carry their own api keys', () => {
+test('array endpoint objects carry their own api keys without global fallback', () => {
   const cfg = {
     apiBaseUrl: ['https://global-a/v1', { url: 'https://global-b/v1', apiKey: 'gk-b' }],
     apiKey: 'gk',
@@ -168,9 +166,7 @@ test('array endpoint objects carry their own api keys', () => {
   assert.deepEqual(route.providers.map((p) => ({ endpoint: p.endpoint, apiKey: p.apiKey })), [
     { endpoint: 'https://ergou1/v1/responses', apiKey: 'ek-1' },
     { endpoint: 'https://ergou2/v1/responses', apiKey: 'ek' },
-    { endpoint: 'https://ergou3/v1/responses', apiKey: 'ek-3' },
-    { endpoint: 'https://global-a/v1/responses', apiKey: 'gk' },
-    { endpoint: 'https://global-b/v1/responses', apiKey: 'gk-b' }
+    { endpoint: 'https://ergou3/v1/responses', apiKey: 'ek-3' }
   ]);
 });
 

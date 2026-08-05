@@ -75,7 +75,7 @@ Minimal configuration:
 
 ### Custom providers (per-model endpoints and wildcards)
 
-By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be overridden to another provider, and that provider has **higher priority than OpenCode** — on failure the router falls back to OpenCode, then to chat/completions. When several models share a provider, `modelPatterns` covers them with a glob (`*` matches any run, `?` matches one character):
+By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be overridden to another provider. **Once a model has a custom `endpoint`, only that provider is used (array entries are tried in order) and the global `apiBaseUrl` is no longer appended as a fallback** — for example, the gpt family only goes through ergou and never degrades to an opencode endpoint that does not support the model. When several models share a provider, `modelPatterns` covers them with a glob (`*` matches any run, `?` matches one character):
 
 ```json
 {
@@ -96,7 +96,7 @@ By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be
 - `apiKeyEnv`: environment variable holding the provider API key; falls back to the global `apiKeyEnv` when omitted
 - `maxHistoryMessages`: optional, keep only the latest N messages before forwarding (for providers with small context windows, e.g. ergou luna); no truncation by default
 - `contextWindow`: optional, overrides the catalog `context_window` for this model (Codex uses it to decide when to compact). The ergou GPT family defaults to 353K.
-- Priority: custom provider → `apiBaseUrl` (OpenCode) → protocol fallback (chat/completions)
+- Priority: custom provider (exclusive when configured) → `apiBaseUrl` (only for models without a custom endpoint) → protocol fallback (chat/completions, only when `apiBaseUrl` exists; set `apiBaseUrl` to `null` to disable the global fallback entirely)
 
 Both `endpoint` and the global `apiBaseUrl` accept a **string or an array**: with an array, providers are tried in order and the first successful response wins. Each element can be a string (uses the model/global default key) or an object `{ "url": "...", "apiKeyEnv": "..." }` to assign a dedicated key to that endpoint:
 
