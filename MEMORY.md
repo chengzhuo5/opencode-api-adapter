@@ -70,3 +70,19 @@
 - 根因：opencode.ai 的 /responses 直通流返回精简 completed（仅 id/model/usage）；chat 降级与 anthropic 转换生成的 completed 也缺顶层 input_tokens/output_tokens。Codex 客户端严格反序列化要求顶层字段。
 - 修复：fallback.js relayUpstream 对直通 SSE/JSON 规范化（normalizeResponsesObject 补 object/created_at/status/input_tokens/output_tokens/output/error/incomplete_details，值取自 usage 或缺省 0）；chatToResponses.js / anthropicToResponses.js 生成的 completed 同样补顶层 token 字段（tokensFromUsage 兼容 prompt_tokens/completion_tokens 与 input_tokens/output_tokens）。
 - 教训：直通上游的响应格式不可信，客户端要求的顶层字段必须在路由侧兜底补全。
+
+## 2026-08-05：cc-switch 源码对比（路由差距清单）
+
+**来源**：`C:\Code\AI\cc-switch`（farion1231/cc-switch v3.19.1，Tauri/Rust 桌面应用，本地代理端口 15721）。
+
+**我们的路由已具备**：Responses/chat/messages 多协议转发与转换、多 provider 数组按序 failover、5 分钟主动健康探测（unhealthy 排末尾、恢复自动切回）、流保活/卡死切非流式重试、响应字段规范化、图片多模态升级/剥离、历史裁剪、lean-ctx 压缩、watchdog 自启。
+
+**cc-switch 有而我们没有（按价值排序）**：
+1. 熔断器（Closed/Open/HalfOpen 状态机，连续失败/错误率/最小请求数阈值，半开探测限流，按应用+供应商独立，真实流量被动驱动）——我们只有主动健康排序。
+2. 用量/计费：SQLite 请求日志（token/缓存读/写/延迟/首 token/状态）、供应商与模型统计、趋势、缓存命中率、内置+自定义价格表、费用估算；会话 JSONL 用量导入（Codex/OpenCode/Gemini）；DeepSeek 等余额与订阅额度查询。
+3. 可配置超时/重试：流首字节超时、流静默超时、最大重试次数、TTFB 降级阈值（我们只有 requestMs/streamIdleMs + 卡死切非流式）。
+4. 模型映射（haiku/sonnet/opus/default → 供应商模型名改写）与官方模型目录镜像（DeepSeek models.json 原样下发，保留 freeform apply_patch/base_instructions）。
+5. cache_control 断点注入（Bedrock/Anthropic prompt caching）、thinking 签名/预算整流、content-encoding、tool_media 清洗。
+6. 桌面应用范畴：MCP/Skills/Prompts/会话管理、S3/WebDAV 云同步、deep link、OAuth/auth.json 快照切换、UI 热切换。
+
+**结论**：路由最值得补的是熔断器（被动失败驱动）与请求日志/用量统计；其余多为桌面应用能力，不必并入纯 Node 路由。tokens_saved=0 仍是 lean-ctx 未启用/daemon 未跑的问题，与 cc-switch 无关。
