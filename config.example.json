@@ -62,7 +62,7 @@
     "timeoutMs": 20000
   },
   "circuitBreaker": {
-    "enabled": true,
+    "enabled": false,
     "failureThreshold": 3,
     "successThreshold": 2,
     "timeoutMs": 60000,

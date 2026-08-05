@@ -10,7 +10,7 @@
 - MiniMax/Qwen 的 Anthropic Messages 路由保持独立，不参与 Responses→Chat fallback。
 - DeepSeek V4 Pro/Flash 在最新用户消息中检测到 `input_image`、`image_url` 或 `file_id` 时自动切换到 `gpt-5.6-luna`；旧历史消息中的图片不会触发降级。
 - 跨协议上下文规范化：工具调用（含旧会话中的 `custom_tool_call`/`custom_tool_call_output`）、`reasoning_content`、旧的重复工具名和历史内部字段都会被清理或转换；对中断或错位的工具轮次自动修复，保证上游要求的 tool_calls ↔ tool 消息配对；重放时丢弃不兼容的历史条目 id（旧会话的 `resp_..._msg` 前缀会被部分上游拒绝）。
-- 被动熔断器：真实请求连续失败或错误率超阈值后自动跳过该 provider，熔断期结束后放行半开探测，成功达到阈值自动恢复；与主动健康探测互补。
+- 被动熔断器（默认关闭，可在 `circuitBreaker.enabled` 开启）：真实请求连续失败或错误率超阈值后自动跳过该 provider，熔断期结束后放行半开探测，成功达到阈值自动恢复；与主动健康探测互补。
 - 模型级上下文窗口：catalog 按模型声明 `context_window`（ergou 的 GPT 系列为 353K，其余沿用模板 1M），Codex 据此提前压缩，避免上游上下文超限。
 - 通配符模型配置：`modelPatterns` 用 `gpt-*` 这类模式统一管理一批模型，精确模型条目优先于通配符。
 - 请求日志与用量统计：每次请求追加 JSONL（模型/provider/状态/token/缓存/延迟），`GET /v1/usage` 返回汇总、按模型/provider/天分组的统计。
@@ -129,7 +129,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
     "timeoutMs": 20000
   },
   "circuitBreaker": {
-    "enabled": true,
+    "enabled": false,
     "failureThreshold": 3,
     "successThreshold": 2,
     "timeoutMs": 60000,
@@ -142,7 +142,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
 两层机制互补：
 
 - `healthCheck`：每 `intervalMs` 主动发一次流式探针，探测失败的 provider 被排到末尾，恢复后自动切回（日志事件 `provider_health`）。
-- `circuitBreaker`：由真实请求成败驱动，按 `model::endpoint` 独立统计。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
+- `circuitBreaker`：默认关闭（`enabled: false`），需要时开启。由真实请求成败驱动，按 `model::endpoint` 独立统计。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
 
 ### 请求日志与用量统计
 

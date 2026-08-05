@@ -199,3 +199,10 @@
   - `src/circuitBreaker.js`：`allow(key, options)` 支持 `forceProbe`；open 状态下即使未到 timeout 也立即转 half_open 放行一个探测请求（语义与超时后的半开探测一致，并发时仍只有一个 permit）。
   - `src/fallback.js`：`breaker.allow(breakerKey, { forceProbe: lastProvider })`——**仅最后一个 provider 且无后续兜底时**强制探测，多 provider 场景维持原短路行为。
 - **验证**：`test/circuitBreaker.test.js` 新增 forceProbe 用例；`test/fallback.test.js` 新增“单 provider 熔断仍探测上游”用例；**170 测试全过**。顺带修复 `test/usageLog.test.js` 的按墙钟跨午夜脆弱断言（锚点改本地中午）。服务重启后真实 sol 请求 200。
+
+## 2026-08-05：熔断器按用户决定关闭（默认 disabled）
+
+- **决定**：用户在 forceProbe 修复后又表示“熔断加了以后问题很多，要不关了算了”，已照办。
+- **改动**：`config.json`（gitignored，本机生效）与 `config.example.json` 的 `circuitBreaker.enabled` 均设为 `false`；README.zh-CN/README.en 同步说明“默认关闭，可在配置开启”。服务重启后 `api/status` 确认 `circuitEnabled=false`、熔断器实例数为 0，sol 真实请求 200。
+- **代码保留**：`circuitBreaker.js` 的 forceProbe 逻辑与相关测试仍然保留，未来开启时可复用；熔断代码在 `enabled:false` 时完全旁路（allow 恒 true、record 为 no-op）。
+- **注意**：`catalog-template.json` 的 truncation_policy.limit 改动与 `src/compression.js.bak-20260805` 都是用户已有文件，未提交未动。
