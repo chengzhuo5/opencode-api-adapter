@@ -154,3 +154,12 @@
   - `POST /api/codex/restore` 空 body 会 `JSON.parse('')` 抛错 → 接口容错为空对象。
   - 服务进程热重启只重载配置不重载代码；新增代码必须 `Restart-Service CodexRouter`（sudo）。
   - 真实 config.toml 里有 secret（experimental_bearer_token、CONTEXT7_API_KEY），任何日志/API/文档都不得输出原文。
+
+## 2026-08-05：压缩启用 + LEAN_CTX_PROXY_TOKEN 服务注入
+
+- **现象**：`compress.enabled=false` 时路由只有 context_truncation/image_stripped，没有任何压缩。daemon 4444 在跑但 `/healthz` 超时（lean-ctx 无该端点，属正常）；`POST /v1/compress` 手动测试可通（约 29s，首调慢），但路由热加载启用后全报 `context_compression reason=backend_unavailable`。
+- **根因**：NSSM 服务以 LocalSystem 运行，读不到 `C:\Users\29302\.local\share\lean-ctx\session_token`（SDK 的 resolveToken 在 token 为空时按用户目录探测），压缩请求 401 → 被 catch 记成 backend_unavailable。
+- **修复**：`scripts/update-service-leanctx-token.ps1` 把 `LEAN_CTX_PROXY_TOKEN=<session_token>` 与三个 API key 一起重写进 NSSM `AppEnvironmentExtra` 并重启服务（sudo 执行）。config.json `compress.token` 保持空字符串即可，非服务模式 SDK 会自动读 token 文件。
+- **验证**：服务重启后真实流量 deepseek-v4-flash `context_compression reason=ok`，单次 tokens_saved≈100K（66%），累计 total_tokens_saved≈757K；构造 gpt-5.6-luna 小请求也 outputs_compressed=1。
+- **注意**：`nssm get AppEnvironmentExtra` 会把服务环境里所有 key 明文打到终端/会话记录，排查时避免直接输出；若担心泄露需轮换 key。
+- **其他观察**：gpt-5.6-sol 正大量 502/500（ergou）与 401（opencode），熔断器已 open opencode 端点；与压缩无关，待排查。
