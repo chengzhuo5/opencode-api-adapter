@@ -12,6 +12,7 @@ import { logEvent } from './logger.js';
 import { maybeCompressInput, loadOutput } from './compression.js';
 import { createLeanCtxClient } from './leanCtxClient.js';
 import { createHealthMonitor } from './health.js';
+import { createCircuitBreaker } from './circuitBreaker.js';
 
 export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
   const compressEnabled = config?.compress?.enabled && config.compress.backend === 'lean-ctx';
@@ -24,6 +25,11 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
     ? createHealthMonitor({ config, fetchImpl })
     : null;
   if (health) health.start();
+  const breaker = config?.circuitBreaker?.enabled
+    ? createCircuitBreaker(config, {
+        onStateChange: (key, state) => logEvent(config, { event: 'provider_circuit', key, state })
+      })
+    : null;
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -53,7 +59,7 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
         const body = await readJson(req);
         const route = resolveRoute(config, maybeUpgradeModel(body).model);
         if (health) reorderProvidersByHealth(route, health);
-        await forward(res, body, route, config, fetchImpl, { client: ctxClient, storeDir: ctxStoreDir, cache: ctxCache, safety: ctxSafety, stats: ctxStats });
+        await forward(res, body, route, config, fetchImpl, { client: ctxClient, storeDir: ctxStoreDir, cache: ctxCache, safety: ctxSafety, stats: ctxStats, breaker });
         return;
       }
       sendJson(res, 404, { error: { message: `not found: ${req.method} ${url.pathname}` } });
@@ -161,7 +167,7 @@ async function forward(res, body, route, config, fetchImpl, compression) {
     await forwardChatRoute(res, compressed, route, config, fetchImpl, body.model, { replay });
     return;
   }
-  await forwardWithFallback(res, compressed, route, config, fetchImpl, body.model, { replay });
+  await forwardWithFallback(res, compressed, route, config, fetchImpl, body.model, { replay, breaker: compression?.breaker });
 }
 
 async function forwardChatRoute(res, body, route, config, fetchImpl, displayModel, options = {}) {

@@ -10,6 +10,8 @@
 - MiniMax/Qwen Anthropic Messages routing remains independent and is not included in Responses→Chat fallback.
 - DeepSeek V4 Pro/Flash requests whose latest user message contains `input_image`, `image_url`, or `file_id` are automatically routed to `gpt-5.6-luna`; images in older history turns do not trigger the fallback.
 - Cross-protocol history normalization preserves tool calls (including legacy `custom_tool_call`/`custom_tool_call_output` items) and reasoning, removes internal fields, repairs duplicated historical tool names, and re-pairs interrupted or interleaved tool rounds so every `tool_calls` message is answered before the next role. Stored item ids are dropped on replay because legacy `resp_..._msg` prefixed ids are rejected by some upstreams.
+- Passive circuit breaker: providers are skipped after consecutive failures or a sustained error rate, a half-open probe is allowed after the cooldown, and the provider recovers after enough probe successes. Complements the active health probes.
+- Per-model context windows: the catalog declares `context_window` per model (353K for the ergou GPT family, template default 1M otherwise) so Codex compacts before the upstream limit is hit.
 - Structured console logs report multimodal and API fallback events without logging API keys, full prompts, or image data.
 - Usable as a CLI or imported as a Node HTTP server.
 
@@ -77,7 +79,9 @@ By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be
     "gpt-5.6-luna": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
-      "apiKeyEnv": "ERGOUAPI_API_KEY"
+      "apiKeyEnv": "ERGOUAPI_API_KEY",
+      "maxHistoryMessages": 10,
+      "contextWindow": 353000
     }
   }
 }
@@ -86,6 +90,7 @@ By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be
 - `endpoint`: base URL of the custom provider (the router appends `/responses` or `/messages`)
 - `apiKeyEnv`: environment variable holding the provider API key; falls back to the global `apiKeyEnv` when omitted
 - `maxHistoryMessages`: optional, keep only the latest N messages before forwarding (for providers with small context windows, e.g. ergou luna); no truncation by default
+- `contextWindow`: optional, overrides the catalog `context_window` for this model (Codex uses it to decide when to compact). The ergou GPT family defaults to 353K.
 - Priority: custom provider → `apiBaseUrl` (OpenCode) → protocol fallback (chat/completions)
 
 Both `endpoint` and the global `apiBaseUrl` accept a **string or an array**: with an array, providers are tried in order and the first successful response wins. Each element can be a string (uses the model/global default key) or an object `{ "url": "...", "apiKeyEnv": "..." }` to assign a dedicated key to that endpoint:
@@ -107,6 +112,31 @@ opencode-api-adapter
 
 opencode-api-adapter --config "C:\path\to\config.json"
 ```
+
+### Health checks and circuit breaker
+
+```json
+{
+  "healthCheck": {
+    "enabled": true,
+    "intervalMs": 300000,
+    "timeoutMs": 20000
+  },
+  "circuitBreaker": {
+    "enabled": true,
+    "failureThreshold": 3,
+    "successThreshold": 2,
+    "timeoutMs": 60000,
+    "errorRateThreshold": 0.6,
+    "minRequests": 5
+  }
+}
+```
+
+The two layers complement each other:
+
+- `healthCheck` sends a streaming probe every `intervalMs`; failed providers are moved to the end of the queue and restored automatically when they recover (`provider_health` log events).
+- `circuitBreaker` is driven by real request outcomes, tracked per `model::endpoint`. A provider is tripped after `failureThreshold` consecutive failures, or once at least `minRequests` requests have an error rate above `errorRateThreshold`; after `timeoutMs` one half-open probe is allowed, and `successThreshold` consecutive probe successes close the breaker. State changes emit `provider_circuit` log events.
 
 ## Context compression (lean-ctx)
 

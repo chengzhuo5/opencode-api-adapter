@@ -122,6 +122,45 @@ test('fallback retries chat on network error', async () => {
   assert.equal(calls.length, 2);
 });
 
+test('circuit breaker skips failing provider on subsequent requests', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes('bad.test')) throw new Error('bad provider down');
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response', model: 'deepseek-v4-flash', usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const cfg = {
+    apiKey: 'k',
+    apiBaseUrl: 'https://global/v1',
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'responses',
+        endpoint: [
+          { url: 'https://bad.test/v1', apiKey: 'bk' },
+          { url: 'https://good.test/v1', apiKey: 'gk' }
+        ]
+      }
+    },
+    circuitBreaker: { enabled: true, failureThreshold: 1, successThreshold: 1, timeoutMs: 60000, errorRateThreshold: 0.6, minRequests: 1 }
+  };
+  const request = (base) => fetch(base + '/v1/responses', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] }] })
+  });
+  await withServer(cfg, fetchImpl, async (base) => {
+    const r1 = await request(base);
+    assert.equal(r1.status, 200);
+    const r2 = await request(base);
+    assert.equal(r2.status, 200);
+  });
+  assert.deepEqual(calls, [
+    'https://bad.test/v1/responses',
+    'https://good.test/v1/responses',
+    'https://good.test/v1/responses'
+  ], 'bad provider should be tripped after first failure and skipped on second request');
+});
+
 test('fallback relays responses when it succeeds', async () => {
   let calls = 0;
   const fetchImpl = async (url) => {

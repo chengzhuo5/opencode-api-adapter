@@ -2,7 +2,7 @@
 # 用法（任务计划程序/启动文件夹）：
 #   powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Code\AI\opencode-api-adapter\scripts\start-router-watchdog.ps1"
 $ErrorActionPreference = 'Continue'
-$routerDir = 'C:\Users\cheng\Documents\Codex\2026-08-03\new-chat-2\outputs\codex-router'
+$routerDir = 'C:\Code\AI\opencode-api-adapter'
 $logDir = Join-Path $routerDir 'logs'
 $nodeExe = 'C:\Program Files\nodejs\node.exe'
 $leanCtxExe = 'C:\ProgramData\npm\npm\node_modules\lean-ctx-bin\bin\lean-ctx.exe'
@@ -24,6 +24,7 @@ function Write-Log([string]$message) {
 function Start-Router {
   $env:ERGOUAPI_API_KEY = Get-UserEnv 'ERGOUAPI_API_KEY'
   $env:OPENCODE_GO_API_KEY = Get-UserEnv 'OPENCODE_GO_API_KEY'
+  $env:DEEPSEEK_API_KEY = Get-UserEnv 'DEEPSEEK_API_KEY'
   if (-not $env:OPENCODE_GO_API_KEY) { Write-Log 'WARN OPENCODE_GO_API_KEY not set in HKCU\Environment' }
   Start-Process -FilePath $nodeExe -ArgumentList 'src/main.js' -WorkingDirectory $routerDir -WindowStyle Hidden -RedirectStandardOutput (Join-Path $logDir 'router.out.log') -RedirectStandardError (Join-Path $logDir 'router.err.log')
   Write-Log 'router start requested'

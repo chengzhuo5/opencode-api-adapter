@@ -13,7 +13,8 @@
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
       "apiKeyEnv": "ERGOUAPI_API_KEY",
-      "maxHistoryMessages": 10
+      "maxHistoryMessages": 10,
+      "contextWindow": 353000
     },
     "deepseek-v4-flash": {
       "upstream": "responses",
@@ -32,31 +33,36 @@
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
       "apiKeyEnv": "ERGOUAPI_API_KEY",
-      "maxHistoryMessages": 10
+      "maxHistoryMessages": 10,
+      "contextWindow": 353000
     },
     "gpt-5.4": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
       "apiKeyEnv": "ERGOUAPI_API_KEY",
-      "maxHistoryMessages": 10
+      "maxHistoryMessages": 10,
+      "contextWindow": 353000
     },
     "gpt-5.5": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
       "apiKeyEnv": "ERGOUAPI_API_KEY",
-      "maxHistoryMessages": 10
+      "maxHistoryMessages": 10,
+      "contextWindow": 353000
     },
     "gpt-5.6-terra": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
       "apiKeyEnv": "ERGOUAPI_API_KEY",
-      "maxHistoryMessages": 10
+      "maxHistoryMessages": 10,
+      "contextWindow": 353000
     },
     "gpt-5.6-sol": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
       "apiKeyEnv": "ERGOUAPI_API_KEY",
-      "maxHistoryMessages": 10
+      "maxHistoryMessages": 10,
+      "contextWindow": 353000
     }
   },
   "compress": {
@@ -73,5 +79,13 @@
     "enabled": true,
     "intervalMs": 300000,
     "timeoutMs": 20000
+  },
+  "circuitBreaker": {
+    "enabled": true,
+    "failureThreshold": 3,
+    "successThreshold": 2,
+    "timeoutMs": 60000,
+    "errorRateThreshold": 0.6,
+    "minRequests": 5
   }
 }

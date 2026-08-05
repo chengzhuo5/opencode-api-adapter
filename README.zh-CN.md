@@ -10,6 +10,8 @@
 - MiniMax/Qwen 的 Anthropic Messages 路由保持独立，不参与 Responses→Chat fallback。
 - DeepSeek V4 Pro/Flash 在最新用户消息中检测到 `input_image`、`image_url` 或 `file_id` 时自动切换到 `gpt-5.6-luna`；旧历史消息中的图片不会触发降级。
 - 跨协议上下文规范化：工具调用（含旧会话中的 `custom_tool_call`/`custom_tool_call_output`）、`reasoning_content`、旧的重复工具名和历史内部字段都会被清理或转换；对中断或错位的工具轮次自动修复，保证上游要求的 tool_calls ↔ tool 消息配对；重放时丢弃不兼容的历史条目 id（旧会话的 `resp_..._msg` 前缀会被部分上游拒绝）。
+- 被动熔断器：真实请求连续失败或错误率超阈值后自动跳过该 provider，熔断期结束后放行半开探测，成功达到阈值自动恢复；与主动健康探测互补。
+- 模型级上下文窗口：catalog 按模型声明 `context_window`（ergou 的 GPT 系列为 353K，其余沿用模板 1M），Codex 据此提前压缩，避免上游上下文超限。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
 - 支持作为 CLI 启动，也可以导入 `createRouter` 构建自己的 Node HTTP 服务。
 
@@ -77,7 +79,9 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
     "gpt-5.6-luna": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
-      "apiKeyEnv": "ERGOUAPI_API_KEY"
+      "apiKeyEnv": "ERGOUAPI_API_KEY",
+      "maxHistoryMessages": 10,
+      "contextWindow": 353000
     }
   }
 }
@@ -86,6 +90,7 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 - `endpoint`：自定义服务商的 base URL（路由会自动拼接 `/responses` 或 `/messages`）
 - `apiKeyEnv`：该服务商 API key 对应的环境变量名；不设置则复用全局 `apiKeyEnv`
 - `maxHistoryMessages`：可选，转发前只保留最近 N 条消息（自定义服务商上下文窗口较小时使用，如 ergou 的 luna）；默认不截断
+- `contextWindow`：可选，覆盖该模型在 catalog 中声明的上下文窗口（Codex 用它决定何时压缩）。ergou 的 GPT 系列实际窗口为 353K，已内置为默认值
 - 优先级：自定义服务商 → `apiBaseUrl`（OpenCode）→ 协议降级（chat/completions）
 
 `endpoint` 和全局 `apiBaseUrl` 都支持**字符串或数组**：数组时按顺序逐个尝试，第一个成功响应的生效。每个元素可以是字符串（用模型/全局默认 key）或对象 `{ "url": "...", "apiKeyEnv": "..." }`（为该端点指定独立 key）：
@@ -107,6 +112,31 @@ opencode-api-adapter
 
 opencode-api-adapter --config "C:\path\to\config.json"
 ```
+
+### 健康检查与熔断器
+
+```json
+{
+  "healthCheck": {
+    "enabled": true,
+    "intervalMs": 300000,
+    "timeoutMs": 20000
+  },
+  "circuitBreaker": {
+    "enabled": true,
+    "failureThreshold": 3,
+    "successThreshold": 2,
+    "timeoutMs": 60000,
+    "errorRateThreshold": 0.6,
+    "minRequests": 5
+  }
+}
+```
+
+两层机制互补：
+
+- `healthCheck`：每 `intervalMs` 主动发一次流式探针，探测失败的 provider 被排到末尾，恢复后自动切回（日志事件 `provider_health`）。
+- `circuitBreaker`：由真实请求成败驱动，按 `model::endpoint` 独立统计。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
 
 ## 上下文压缩（lean-ctx）
 

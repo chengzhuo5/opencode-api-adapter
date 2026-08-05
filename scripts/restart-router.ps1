@@ -7,10 +7,13 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 $ergouKey = (Get-ItemProperty 'HKCU:\Environment').ERGOUAPI_API_KEY
 $opencodeKey = (Get-ItemProperty 'HKCU:\Environment').OPENCODE_GO_API_KEY
+$deepseekKey = (Get-ItemProperty 'HKCU:\Environment').DEEPSEEK_API_KEY
 if (-not $ergouKey) { Write-Warning 'ERGOUAPI_API_KEY is not set in HKCU\Environment - ergou requests will 401 and fall back to opencode.' }
 if (-not $opencodeKey) { Write-Warning 'OPENCODE_GO_API_KEY is not set in HKCU\Environment.' }
+if (-not $deepseekKey) { Write-Warning 'DEEPSEEK_API_KEY is not set in HKCU\Environment - deepseek official fallback will be unauthenticated.' }
 $env:ERGOUAPI_API_KEY = $ergouKey
 $env:OPENCODE_GO_API_KEY = $opencodeKey
+$env:DEEPSEEK_API_KEY = $deepseekKey
 
 $conn = Get-NetTCPConnection -LocalPort 15722 -State Listen -ErrorAction SilentlyContinue
 if ($conn) {

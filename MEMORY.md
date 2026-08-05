@@ -86,3 +86,13 @@
 6. 桌面应用范畴：MCP/Skills/Prompts/会话管理、S3/WebDAV 云同步、deep link、OAuth/auth.json 快照切换、UI 热切换。
 
 **结论**：路由最值得补的是熔断器（被动失败驱动）与请求日志/用量统计；其余多为桌面应用能力，不必并入纯 Node 路由。tokens_saved=0 仍是 lean-ctx 未启用/daemon 未跑的问题，与 cc-switch 无关。
+
+## 2026-08-05：ergou GPT 上下文 353K + 被动熔断器
+
+- **ergou GPT 上下文窗口只有 353K**（用户确认，ergou /v1/models 不返回 context 字段，51cto 文章被 WAF 拦未能读到）。catalog 模板默认 1M，之前 Codex 会以为 ergou 能装 1M 历史，接近上限才压缩，容易撞上游超限。
+  - 实现：`modelMeta.js` 给 6 个 gpt-*（ergou）模型加 `contextWindow: 353000`；`catalog.js` 支持 `config.models[id].contextWindow` 覆盖；`catalog.json` 重新生成后 gpt 系列 context_window/max_context_window=353000，deepseek 仍 1M。
+- **被动熔断器**（`src/circuitBreaker.js`）：closed→open→half_open 状态机，按 `model::endpoint` 统计；连续失败 ≥ failureThreshold 或（请求数 ≥ minRequests 且错误率 ≥ errorRateThreshold）→ open；timeoutMs 后放行 1 个半开探测，连续成功 ≥ successThreshold → closed。由真实请求驱动，与 health.js 主动探测互补。
+  - 接入：`fallback.js` forwardWithFallback 循环内 allow/record；`relayUpstream*`/`pipeSseWithNormalization` 改为返回成功与否，流中断补发 failed 也会记为失败；`server.js` 创建 breaker 并传参。
+  - 坑：open 超时切 half_open 时，当前探测请求必须消耗唯一的 permit（halfOpenPermits 置 0），否则并发请求都能放行。
+  - 配置：`circuitBreaker.enabled` 等见 config.example.json；本地 config.json 已启用（3/2/60s/0.6/5）。
+- **watchdog 路径 bug**：commit a7d29b8 把 `scripts/start-router-watchdog.ps1` 的 `$routerDir` 错改成 `C:\Users\cheng\Documents\...`（另一台机器路径），而任务计划程序 `opencode-router-watchdog` 执行的是本仓库脚本——路由挂掉会被拉到错误目录。已改回 `C:\Code\AI\opencode-api-adapter`，并给 watchdog/restart 脚本补注入 `DEEPSEEK_API_KEY`（原来只注入 ERGOU/OPENCODE）。

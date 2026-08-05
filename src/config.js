@@ -15,6 +15,14 @@ export const DEFAULT_CONFIG = {
     intervalMs: 300000,
     timeoutMs: 20000
   },
+  circuitBreaker: {
+    enabled: false,
+    failureThreshold: 3,
+    successThreshold: 2,
+    timeoutMs: 60000,
+    errorRateThreshold: 0.6,
+    minRequests: 5
+  },
   compress: {
     enabled: true,
     backend: 'lean-ctx',
@@ -37,7 +45,8 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     timeouts: { ...DEFAULT_CONFIG.timeouts, ...(raw.timeouts || {}) },
     models: raw.models || {},
     compress: { ...DEFAULT_CONFIG.compress, ...(raw.compress || {}) },
-    healthCheck: { ...DEFAULT_CONFIG.healthCheck, ...(raw.healthCheck || {}) }
+    healthCheck: { ...DEFAULT_CONFIG.healthCheck, ...(raw.healthCheck || {}) },
+    circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...(raw.circuitBreaker || {}) }
   };
   const apiKey = env[config.apiKeyEnv];
   if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);
