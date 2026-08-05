@@ -190,3 +190,12 @@
   - 提供 `__setUnsupportedCacheNowForTest` / `__resetUnsupportedCacheNowForTest` 供测试注入时钟。
 - **验证**：`test/fallback.test.js` 新增 3 个用例（401 不缓存、per-provider 不污染其他模型、TTL 过期重试）；全套 **168 测试全过**；`loadConfig` 实测 `apiBaseUrl:null` → `hasChatFallback=false`，sol/luna → `https://ergouapi.com/v1/responses` 唯一 provider；Restart-Service 后真实流式请求 `gpt-5.6-sol` → ergou `/responses` 200（usage 确认，不再 401）。
 - **注意**：`compress.enabled=false` 是用户**故意关闭**（说稍后排查），不要擅自改回 true。`catalog-template.json` 的 `truncation_policy.limit 10000→100000` 也是用户已有改动，保留未提交。
+
+## 2026-08-05：唯一 provider 熔断导致 502（已修复）
+
+- **现象**：上轮修复后出现 `unexpected status 502 Bad Gateway: all providers skipped and no chat fallback configured for gpt-5.6-sol`。
+- **根因**：熔断器对 `gpt-5.6-sol::ergou /responses` open（5 次请求 4 次失败），而 gpt-* 只有 ergou 一个 provider 且 apiBaseUrl=null 无 chat 兜底 → `allow()` 拒绝后直接 502，60 秒内完全不可用。
+- **修复**：
+  - `src/circuitBreaker.js`：`allow(key, options)` 支持 `forceProbe`；open 状态下即使未到 timeout 也立即转 half_open 放行一个探测请求（语义与超时后的半开探测一致，并发时仍只有一个 permit）。
+  - `src/fallback.js`：`breaker.allow(breakerKey, { forceProbe: lastProvider })`——**仅最后一个 provider 且无后续兜底时**强制探测，多 provider 场景维持原短路行为。
+- **验证**：`test/circuitBreaker.test.js` 新增 forceProbe 用例；`test/fallback.test.js` 新增“单 provider 熔断仍探测上游”用例；**170 测试全过**。顺带修复 `test/usageLog.test.js` 的按墙钟跨午夜脆弱断言（锚点改本地中午）。服务重启后真实 sol 请求 200。

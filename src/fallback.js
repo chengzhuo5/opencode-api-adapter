@@ -295,7 +295,7 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
       continue;
     }
     const breakerKey = breaker ? breaker.keyOf(displayModel, provider.endpoint) : null;
-    const permit = breaker ? breaker.allow(breakerKey) : { allowed: true, usedHalfOpenPermit: false };
+    const permit = breaker ? breaker.allow(breakerKey, { forceProbe: lastProvider }) : { allowed: true, usedHalfOpenPermit: false };
     if (!permit.allowed) {
       logEvent(config, {
         event: 'circuit_skip',

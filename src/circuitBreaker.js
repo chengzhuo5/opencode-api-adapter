@@ -48,12 +48,15 @@ export function createCircuitBreaker(config = {}, { onStateChange = () => {} } =
    * usedHalfOpenPermit 必须回传给 recordSuccess/recordFailure，
    * 用于释放半开探测名额。
    */
-  function allow(key) {
+  function allow(key, options = {}) {
     if (!cfg.enabled) return { allowed: true, usedHalfOpenPermit: false };
     const s = stateOf(key);
     if (s.state === 'closed') return { allowed: true, usedHalfOpenPermit: false };
     if (s.state === 'open') {
-      if (Date.now() - s.lastOpenedAt >= cfg.timeoutMs) {
+      // 唯一 provider 且无兜底时（forceProbe）立即放行一个探测请求，
+      // 避免用户在上游抖动时被熔断器完全拒绝服务；语义与超时后的 half-open 探测一致。
+      const forceProbe = Boolean(options?.forceProbe);
+      if (forceProbe || Date.now() - s.lastOpenedAt >= cfg.timeoutMs) {
         s.state = 'half_open';
         s.consecutiveSuccesses = 0;
         // 当前请求占用唯一的半开探测名额，结果返回后由 record* 释放

@@ -426,6 +426,31 @@ test('unsupported cache is per provider and does not poison other models', async
   clearUnsupportedCache();
 });
 
+
+test('single provider breaker open still probes upstream instead of rejecting', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (calls.length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'boom' } }), { status: 500, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response', model: 'gpt-5.6-sol', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const cfg = {
+    apiKey: 'k',
+    models: { 'gpt-5.6-sol': { upstream: 'responses', endpoint: 'https://ergou/v1', apiKey: 'ek' } },
+    circuitBreaker: { enabled: true, failureThreshold: 1, successThreshold: 1, timeoutMs: 60000, errorRateThreshold: 0.6, minRequests: 1 }
+  };
+  await withServer(cfg, fetchImpl, async (base) => {
+    const req = () => fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5.6-sol', stream: false, input: [] }) });
+    const r1 = await req();
+    assert.equal(r1.status, 500, 'first request relays upstream failure');
+    const r2 = await req();
+    assert.equal(r2.status, 200, 'open breaker force-probes single provider instead of rejecting');
+  });
+  assert.equal(calls.length, 2, 'both requests reached upstream');
+});
+
 test('unsupported cache expires after TTL and retries upstream', async () => {
   clearUnsupportedCache();
   let now = 1_000_000;

@@ -77,7 +77,9 @@ test('usage logger writes JSONL and reads it back', () => {
 });
 
 test('aggregateUsage computes totals, rates and breakdowns', () => {
-  const now = Date.now();
+  const anchor = new Date();
+  anchor.setHours(12, 0, 0, 0);
+  const now = anchor.getTime();
   const DAY = 86400000;
   const entries = [
     { ts: new Date(now - 2 * DAY).toISOString(), model: 'gpt-5.6-luna', endpoint: 'https://e/v1/responses', ok: true, input_tokens: 100, output_tokens: 50, cache_read_tokens: 20, cache_creation_tokens: 30, latency_ms: 1000 },

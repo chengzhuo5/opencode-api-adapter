@@ -97,3 +97,17 @@ test('reset clears breaker state', () => {
   cb.reset(key);
   assert.equal(cb.isAvailable(key), true);
 });
+
+test('forceProbe allows one request immediately when open and records success path', () => {
+  const cb = createCircuitBreaker({ ...cfg, circuitBreaker: { ...cfg.circuitBreaker, timeoutMs: 600000 } });
+  const key = 'gpt-5.6-sol::https://ergou/v1/responses';
+  for (let i = 0; i < 3; i++) cb.recordFailure(key);
+  assert.equal(cb.isAvailable(key), false);
+  const probe = cb.allow(key, { forceProbe: true });
+  assert.equal(probe.allowed, true);
+  assert.equal(probe.usedHalfOpenPermit, true);
+  assert.equal(cb.allow(key).allowed, false, 'only one forced probe is granted');
+  cb.recordSuccess(key, true);
+  cb.recordSuccess(key, true);
+  assert.equal(cb.isAvailable(key), true, 'success threshold closes breaker after forced probe');
+});
