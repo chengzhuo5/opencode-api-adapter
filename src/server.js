@@ -11,6 +11,7 @@ import { maybeUpgradeModel, minimizeHistoryImages, stripAllImages, DEEPSEEK_MODE
 import { logEvent } from './logger.js';
 import { maybeCompressInput, loadOutput } from './compression.js';
 import { createLeanCtxClient } from './leanCtxClient.js';
+import { createHealthMonitor } from './health.js';
 
 export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
   const compressEnabled = config?.compress?.enabled && config.compress.backend === 'lean-ctx';
@@ -19,6 +20,10 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
   const ctxStats = compressEnabled ? { total_chars_before: 0, total_chars_after: 0, total_tokens_before: 0, total_tokens_after: 0, requests: 0 } : null;
   const ctxStoreDir = compressEnabled && config.compress.storeDir ? path.resolve(config.compress.storeDir) : null;
   const ctxClient = compressEnabled ? createLeanCtxClient({ baseUrl: config.compress.baseUrl, token: config.compress.token, timeoutMs: config.compress.timeoutMs }) : null;
+  const health = config?.healthCheck?.enabled
+    ? createHealthMonitor({ config, fetchImpl })
+    : null;
+  if (health) health.start();
   return http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -47,6 +52,7 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const body = await readJson(req);
         const route = resolveRoute(config, maybeUpgradeModel(body).model);
+        if (health) reorderProvidersByHealth(route, health);
         await forward(res, body, route, config, fetchImpl, { client: ctxClient, storeDir: ctxStoreDir, cache: ctxCache, safety: ctxSafety, stats: ctxStats });
         return;
       }
@@ -64,6 +70,18 @@ if (error instanceof UnknownModelError) sendJson(res, 400, { error: { message: e
       else sendJson(res, 500, { error: { message: error.message || 'internal error' } });
     }
   });
+}
+
+function reorderProvidersByHealth(route, health) {
+  if (!route.providers || route.providers.length < 2) return;
+  const healthy = route.providers.filter((p) => !health.isUnhealthy(route.model, p.endpoint));
+  const down = route.providers.filter((p) => health.isUnhealthy(route.model, p.endpoint));
+  if (down.length) {
+    const reordered = [...healthy, ...down];
+    route.providers = reordered;
+    route.endpoint = reordered[0]?.endpoint;
+    route.apiKey = reordered[0]?.apiKey;
+  }
 }
 
 async function forward(res, body, route, config, fetchImpl, compression) {

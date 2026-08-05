@@ -10,6 +10,11 @@ export const DEFAULT_CONFIG = {
   timeouts: { requestMs: 600000, streamIdleMs: 180000 },
   models: {},
   nonStreamingUpstream: false,
+  healthCheck: {
+    enabled: false,
+    intervalMs: 300000,
+    timeoutMs: 20000
+  },
   compress: {
     enabled: true,
     backend: 'lean-ctx',
@@ -31,7 +36,8 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     ...raw,
     timeouts: { ...DEFAULT_CONFIG.timeouts, ...(raw.timeouts || {}) },
     models: raw.models || {},
-    compress: { ...DEFAULT_CONFIG.compress, ...(raw.compress || {}) }
+    compress: { ...DEFAULT_CONFIG.compress, ...(raw.compress || {}) },
+    healthCheck: { ...DEFAULT_CONFIG.healthCheck, ...(raw.healthCheck || {}) }
   };
   const apiKey = env[config.apiKeyEnv];
   if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);

@@ -17,8 +17,16 @@
     },
     "deepseek-v4-flash": {
       "upstream": "responses",
-      "endpoint": "https://api.deepseek.com/v1",
-      "apiKeyEnv": "DEEPSEEK_API_KEY"
+      "endpoint": [
+        {
+          "url": "https://opencode.ai/zen/go/v1",
+          "apiKeyEnv": "OPENCODE_GO_API_KEY"
+        },
+        {
+          "url": "https://api.deepseek.com/v1",
+          "apiKeyEnv": "DEEPSEEK_API_KEY"
+        }
+      ]
     },
     "gpt-5.4-mini": {
       "upstream": "responses",
@@ -60,5 +68,10 @@
     "cacheSize": 1000,
     "timeoutMs": 30000,
     "logLevel": "verbose"
+  },
+  "healthCheck": {
+    "enabled": true,
+    "intervalMs": 300000,
+    "timeoutMs": 20000
   }
 }
