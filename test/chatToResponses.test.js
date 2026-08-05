@@ -157,3 +157,38 @@ test('streamed completed response carries usage and top-level tokens', async () 
   assert.deepEqual(completed.data.response.usage, { prompt_tokens: 42, completion_tokens: 7, total_tokens: 49 });
 });
 
+
+test('converts apply_patch chat tool call back to custom_tool_call with unescaped input', () => {
+  const patch = '*** Begin Patch\n*** End Patch';
+  const chat = {
+    id: 'chatcmpl-1',
+    model: 'deepseek-v4-flash',
+    choices: [{ message: { role: 'assistant', content: '', tool_calls: [{ id: 'call_patch', type: 'function', function: { name: 'apply_patch', arguments: JSON.stringify(patch) } }] } }]
+  };
+  const response = chatToResponsesObject(chat, 'deepseek-v4-flash');
+  const item = response.output[0];
+  assert.equal(item.type, 'custom_tool_call');
+  assert.equal(item.name, 'apply_patch');
+  assert.equal(item.call_id, 'call_patch');
+  assert.equal(item.input, patch);
+  assert.equal(Object.hasOwn(item, 'arguments'), false);
+});
+
+test('converts streamed apply_patch tool call to custom_tool_call on done', async () => {
+  const patch = '*** Begin Patch\n*** Update File: x\n@@\n*** End Patch';
+  const body = streamFromChunks([
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_patch","type":"function","function":{"name":"apply_patch"}}]}}]}\n\n',
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_patch","type":"function","function":{"arguments":' + JSON.stringify(JSON.stringify(patch)) + '}}]}}]}\n\n',
+    'data: [DONE]\n\n'
+  ]);
+  const events = [];
+  await translateChatStreamToResponses(body, 'deepseek-v4-flash', (event, data) => events.push({ event, data }));
+  const done = events.find((item) => item.event === 'response.output_item.done' && item.data.item.name === 'apply_patch');
+  assert.ok(done, 'expected output_item.done for apply_patch');
+  assert.equal(done.data.item.type, 'custom_tool_call');
+  assert.equal(done.data.item.input, patch);
+  assert.equal(Object.hasOwn(done.data.item, 'arguments'), false);
+  const customDone = events.find((item) => item.event === 'response.custom_tool_call.done');
+  assert.ok(customDone, 'expected response.custom_tool_call.done');
+  assert.equal(customDone.data.input, patch);
+});

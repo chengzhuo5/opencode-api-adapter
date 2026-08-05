@@ -28,14 +28,35 @@ export function chatToResponsesObject(chat, requestModel) {
     });
   }
   for (const toolCall of message.tool_calls || []) {
-    output.push({
-      type: 'function_call',
-      id: newId('fc'),
-      call_id: toolCall.id,
-      name: toolCall.function?.name || '',
-      arguments: toolCall.function?.arguments || '',
-      status: 'completed'
-    });
+    const toolName = toolCall.function?.name || '';
+    if (toolName === 'apply_patch') {
+      // Codex 的 apply_patch 是 freeform 工具：请求方向以 custom_tool_call 发出，
+      // chat/completions 把 input JSON 转义进 function.arguments。
+      // 必须还原成 custom_tool_call（input 反转义），否则 Codex handler 报
+      // "apply_patch invoked with incompatible payload"。
+      let raw = toolCall.function?.arguments || '';
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'string') raw = parsed;
+      } catch { /* 不是 JSON 转义，保持原样 */ }
+      output.push({
+        type: 'custom_tool_call',
+        id: newId('ctc'),
+        call_id: toolCall.id,
+        name: toolName,
+        input: raw,
+        status: 'completed'
+      });
+    } else {
+      output.push({
+        type: 'function_call',
+        id: newId('fc'),
+        call_id: toolCall.id,
+        name: toolName,
+        arguments: toolCall.function?.arguments || '',
+        status: 'completed'
+      });
+    }
   }
   return {
     id: chat.id || newId('resp'),
@@ -204,14 +225,35 @@ export async function translateChatStreamToResponses(body, requestModel, writeEv
     writeEvent('response.output_item.done', { type: 'response.output_item.done', output_index: messageIndex, item: messageItem });
   }
   for (const { item, outputIndex } of toolItems.values()) {
-    writeEvent('response.function_call_arguments.done', {
-      type: 'response.function_call_arguments.done',
-      item_id: item.id,
-      output_index: outputIndex,
-      arguments: item.arguments
-    });
-    item.status = 'completed';
-    writeEvent('response.output_item.done', { type: 'response.output_item.done', output_index: outputIndex, item });
+    if (item.name === 'apply_patch') {
+      // 流式路径同样需要把 apply_patch 还原为 custom_tool_call，
+      // 否则 Codex handler 报 "apply_patch invoked with incompatible payload"。
+      let raw = item.arguments || '';
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'string') raw = parsed;
+      } catch { /* 不是 JSON 转义，保持原样 */ }
+      item.type = 'custom_tool_call';
+      item.input = raw;
+      delete item.arguments;
+      writeEvent('response.custom_tool_call.done', {
+        type: 'response.custom_tool_call.done',
+        item_id: item.id,
+        output_index: outputIndex,
+        input: raw
+      });
+      item.status = 'completed';
+      writeEvent('response.output_item.done', { type: 'response.output_item.done', output_index: outputIndex, item });
+    } else {
+      writeEvent('response.function_call_arguments.done', {
+        type: 'response.function_call_arguments.done',
+        item_id: item.id,
+        output_index: outputIndex,
+        arguments: item.arguments
+      });
+      item.status = 'completed';
+      writeEvent('response.output_item.done', { type: 'response.output_item.done', output_index: outputIndex, item });
+    }
   }
 
   response.status = 'completed';
