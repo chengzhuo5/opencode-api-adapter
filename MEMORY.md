@@ -206,3 +206,9 @@
 - **改动**：`config.json`（gitignored，本机生效）与 `config.example.json` 的 `circuitBreaker.enabled` 均设为 `false`；README.zh-CN/README.en 同步说明“默认关闭，可在配置开启”。服务重启后 `api/status` 确认 `circuitEnabled=false`、熔断器实例数为 0，sol 真实请求 200。
 - **代码保留**：`circuitBreaker.js` 的 forceProbe 逻辑与相关测试仍然保留，未来开启时可复用；熔断代码在 `enabled:false` 时完全旁路（allow 恒 true、record 为 no-op）。
 - **注意**：`catalog-template.json` 的 truncation_policy.limit 改动与 `src/compression.js.bak-20260805` 都是用户已有文件，未提交未动。
+
+## 会话工具坑：apply_patch 参数嵌套导致反复失败
+
+- **症状**：报 `invalid patch: The first line of the patch must be '*** Begin Patch'`，重试多轮仍失败。
+- **根因**：把补丁文本多包了一层 JSON 对象字符串传进 `arguments`，工具解析后第一行变成 `{...}` 而非 `*** Begin Patch`。正确用法是 `arguments` 的值等于补丁文本本身（仅 JSON 转义），`*** Begin Patch` 必须是第一行。
+- **应对**：确认格式后已恢复 apply_patch；万一再次失败，小改动可用精确字符串替换脚本（Node readFileSync/writeFileSync + 唯一锚点校验），并用 `git diff` 全量审计。
