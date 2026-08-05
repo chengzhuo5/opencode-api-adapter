@@ -175,3 +175,18 @@
 - **测试污染坑（重要）**：`fallback.js` 模块级 `unsupportedResponses` 缓存跨测试共享。语义变更后"custom 400 → lastProvider"会把模型永久缓存为 unsupported，且旧的 unsupported 测试结束不清缓存，导致后续所有同模型测试直接走 chat（表现为 calls=[chat]、Cannot read 'includes' 等怪错）。修复：相关测试结束加 `clearUnsupportedCache()`；400 用例改 500 避免入缓存。
 - **服务加载**：服务进程需 Restart-Service 才加载新代码（热加载只换配置）。重启后实测：deepseek→opencode 200、gpt-5.6-luna→ergou 200，无 chat 兜底。165 测试全过。
 - config.toml 当前是 deepseek（用户因报错切回）；gpt 系列要恢复可在 admin「Codex 配置」一键 apply minar_route。
+
+## 2026-08-05：sol 高并发 401 最终根因 + fallback 缓存治理（已修复）
+
+- **现象**：用户切 luna 后仍在报 `unexpected status 401 Unauthorized: Model gpt-5.6-sol is not supported, url: http://127.0.0.1:15722/v1/responses`，高并发时明显。
+- **铁证**（usage/requests.jsonl）：同一时段 sol 既有 `ergouapi.com/v1/responses` 200，也有 `opencode.ai/zen/go/v1/chat/completions` 401；路由把 sol 请求导到了 opencode chat 兜底。
+- **根因（两层）**：
+  1. `config.json` 当时**缺 `apiBaseUrl` 字段**，loadConfig 合并默认值 `https://opencode.ai/zen/go/v1` → `hasChatFallback()` 恒 true。ergou 一旦 4xx/瞬时失败，最后兜底就会打到 opencode chat（key 不支持该模型 → 401）。上一轮记录写了“apiBaseUrl 可设为 null”但实际未落盘。**已补 `apiBaseUrl: null` 落盘**（config.json 被 gitignore，改动只在本机生效）。
+  2. `fallback.js` 的 unsupported 缓存是**按模型全局 Set、永不过期、且任何 400/404/405 都缓存**。一次瞬时失败就把整个模型标记为 unsupported，后续请求全部短路到 chat；多个并发请求还会放大污染。
+- **修复（src/fallback.js）**：
+  - 缓存改为 `Map`，key = `model::endpoint`（**per-provider**），TTL 5 分钟（`UNSUPPORTED_CACHE_TTL_MS`），过期自动删除并重试上游。
+  - 只有**明确表示模型不存在/不支持**的错误文本才入缓存（正则匹配 not supported / unknown model / model not found 等），瞬时 401（鉴权）、500、网络错误一律不缓存。
+  - 缓存命中时只跳过该 provider；最后一个 provider 命中且无 chat 兜底时返回 502，不会污染其他模型/provider。
+  - 提供 `__setUnsupportedCacheNowForTest` / `__resetUnsupportedCacheNowForTest` 供测试注入时钟。
+- **验证**：`test/fallback.test.js` 新增 3 个用例（401 不缓存、per-provider 不污染其他模型、TTL 过期重试）；全套 **168 测试全过**；`loadConfig` 实测 `apiBaseUrl:null` → `hasChatFallback=false`，sol/luna → `https://ergouapi.com/v1/responses` 唯一 provider；Restart-Service 后真实流式请求 `gpt-5.6-sol` → ergou `/responses` 200（usage 确认，不再 401）。
+- **注意**：`compress.enabled=false` 是用户**故意关闭**（说稍后排查），不要擅自改回 true。`catalog-template.json` 的 `truncation_policy.limit 10000→100000` 也是用户已有改动，保留未提交。

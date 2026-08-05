@@ -97,6 +97,7 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 - `maxHistoryMessages`：可选，转发前只保留最近 N 条消息（自定义服务商上下文窗口较小时使用，如 ergou 的 luna）；默认不截断
 - `contextWindow`：可选，覆盖该模型在 catalog 中声明的上下文窗口（Codex 用它决定何时压缩）。ergou 的 GPT 系列实际窗口为 353K，已内置为默认值
 - 优先级：自定义服务商（存在时独占）→ `apiBaseUrl`（仅未配置自定义端点的模型）→ 协议降级（chat/completions，仅当 `apiBaseUrl` 存在时可用；`apiBaseUrl` 可设为 `null` 彻底关闭全局兜底）
+- “模型不支持”记忆：仅当上游明确返回模型不存在/不支持（如 `Model x is not supported`）时才按 `model::provider` 短暂记忆（5 分钟 TTL）；鉴权失败（401）、5xx、网络错误等瞬时故障不会污染路由，同一模型的其他 provider 也不受影响
 
 `endpoint` 和全局 `apiBaseUrl` 都支持**字符串或数组**：数组时按顺序逐个尝试，第一个成功响应的生效。每个元素可以是字符串（用模型/全局默认 key）或对象 `{ "url": "...", "apiKeyEnv": "..." }`（为该端点指定独立 key）：
 

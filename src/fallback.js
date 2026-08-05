@@ -7,9 +7,75 @@ import { replayResponsesAsSse } from './translate/responsesReplay.js';
 import { logEvent } from './logger.js';
 import { extractUsage } from './usageLog.js';
 
-const unsupportedResponses = new Set();
-const unsupportedNotified = new Set();
+const unsupportedResponses = new Map();
+const unsupportedNotified = new Map();
 const UNSUPPORTED_STATUSES = new Set([400, 404, 405]);
+export const UNSUPPORTED_CACHE_TTL_MS = 5 * 60_000;
+const UNSUPPORTED_MESSAGE_RE =
+  /not[\s_-]?supported|unknown model|model[^\n]{0,40}(not found|does not exist)|(no such|invalid) model/i;
+
+let unsupportedNow = () => Date.now();
+
+/** 仅测试用：注入可控时钟以验证缓存过期行为。 */
+export function __setUnsupportedCacheNowForTest(fn) {
+  unsupportedNow = fn;
+}
+
+/** 仅测试用：恢复真实时钟。 */
+export function __resetUnsupportedCacheNowForTest() {
+  unsupportedNow = () => Date.now();
+}
+
+function unsupportedKey(model, endpoint) {
+  return `${model}::${endpoint}`;
+}
+
+function isUnsupportedCached(model, endpoint) {
+  const key = unsupportedKey(model, endpoint);
+  const expiry = unsupportedResponses.get(key);
+  if (!expiry) return false;
+  if (expiry > unsupportedNow()) return true;
+  unsupportedResponses.delete(key);
+  return false;
+}
+
+function rememberUnsupported(model, endpoint) {
+  const key = unsupportedKey(model, endpoint);
+  unsupportedResponses.set(key, unsupportedNow() + UNSUPPORTED_CACHE_TTL_MS);
+}
+
+function isUnsupportedNotified(model, endpoint) {
+  const key = unsupportedKey(model, endpoint);
+  const expiry = unsupportedNotified.get(key);
+  if (!expiry) return false;
+  if (expiry > unsupportedNow()) return true;
+  unsupportedNotified.delete(key);
+  return false;
+}
+
+function markUnsupportedNotified(model, endpoint) {
+  const key = unsupportedKey(model, endpoint);
+  unsupportedNotified.set(key, unsupportedNow() + UNSUPPORTED_CACHE_TTL_MS);
+}
+
+/**
+ * 只把“模型本身不存在/不支持”的明确错误视为永久性失败并缓存，
+ * 瞬时 401（鉴权）、500、网络错误等绝不缓存，避免一个请求污染整条路由。
+ */
+function isUnsupportedErrorText(text) {
+  if (!text || text.length > 4000) return false;
+  return UNSUPPORTED_MESSAGE_RE.test(text);
+}
+
+async function isUnsupportedResponse(upstream) {
+  if (!UNSUPPORTED_STATUSES.has(upstream.status)) return false;
+  try {
+    const text = await upstream.clone().text();
+    return isUnsupportedErrorText(text);
+  } catch {
+    return false;
+  }
+}
 
 /** 是否存在可用的全局 chat 兜底（apiBaseUrl 配置且非空）。 */
 function hasChatFallback(config) {
@@ -180,25 +246,6 @@ export function maybeUpgradeModel(body) {
 
 export async function forwardWithFallback(res, body, route, config, fetchImpl, displayModel = body.model, options = {}) {
   const breaker = options.breaker || null;
-  if (unsupportedResponses.has(body.model)) {
-    if (!unsupportedNotified.has(body.model)) {
-      unsupportedNotified.add(body.model);
-      logEvent(config, {
-        event: 'api_fallback',
-        model: displayModel,
-        reason: 'responses_unsupported',
-        primary_endpoint: endpointName(route.endpoint),
-        primary_url: route.endpoint,
-        fallback_endpoint: 'chat/completions'
-      });
-    }
-    if (hasChatFallback(config)) {
-      await forwardChat(res, body, config, fetchImpl, displayModel, options);
-    } else {
-      sendJson(res, 502, { error: { message: `${body.model} responses unsupported and no chat fallback configured` } });
-    }
-    return;
-  }
   let providers = Array.isArray(route.providers) && route.providers.length
     ? route.providers
     : [
@@ -223,6 +270,30 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
   for (let i = 0; i < providers.length; i++) {
     const provider = providers[i];
     const lastProvider = i === providers.length - 1;
+    // “模型不支持”只按 provider 记忆并带 TTL 过期；命中后跳过该 provider，
+    // 但不会影响其他上游（例如 gpt-* → ergou 失败不会污染 opencode 的其它请求）。
+    if (isUnsupportedCached(displayModel, provider.endpoint)) {
+      if (!isUnsupportedNotified(displayModel, provider.endpoint)) {
+        markUnsupportedNotified(displayModel, provider.endpoint);
+        logEvent(config, {
+          event: 'api_fallback',
+          model: displayModel,
+          reason: 'responses_unsupported',
+          primary_endpoint: endpointName(provider.endpoint),
+          primary_url: provider.endpoint,
+          fallback_endpoint: lastProvider ? 'chat/completions' : endpointName(providers[i + 1].endpoint)
+        });
+      }
+      if (lastProvider) {
+        if (hasChatFallback(config)) {
+          await forwardChat(res, body, config, fetchImpl, displayModel, options);
+        } else {
+          sendJson(res, 502, { error: { message: `${displayModel} responses unsupported and no chat fallback configured` } });
+        }
+        return;
+      }
+      continue;
+    }
     const breakerKey = breaker ? breaker.keyOf(displayModel, provider.endpoint) : null;
     const permit = breaker ? breaker.allow(breakerKey) : { allowed: true, usedHalfOpenPermit: false };
     if (!permit.allowed) {
@@ -301,8 +372,8 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
     }
     breaker?.recordFailure(breakerKey, permit.usedHalfOpenPermit);
     options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: upstream.status, error: 'http_error' });
-    if (lastProvider && UNSUPPORTED_STATUSES.has(upstream.status)) {
-      unsupportedResponses.add(body.model);
+    if (lastProvider && await isUnsupportedResponse(upstream)) {
+      rememberUnsupported(displayModel, provider.endpoint);
     }
     logEvent(config, {
       event: 'api_fallback',

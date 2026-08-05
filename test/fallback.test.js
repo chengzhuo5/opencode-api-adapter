@@ -304,7 +304,7 @@ test('logs API fallback trigger and result without request contents', async () =
   assert.equal(JSON.stringify(events).includes('private prompt'), false);
 });
 
-import { clearUnsupportedCache } from '../src/fallback.js';
+import { clearUnsupportedCache, UNSUPPORTED_CACHE_TTL_MS, __setUnsupportedCacheNowForTest, __resetUnsupportedCacheNowForTest } from '../src/fallback.js';
 
 test('remembers unsupported responses endpoint for subsequent requests', async () => {
   clearUnsupportedCache();
@@ -313,7 +313,7 @@ test('remembers unsupported responses endpoint for subsequent requests', async (
     const body = JSON.parse(init.body);
     calls.push({ url, body });
     if (url.endsWith('/responses')) {
-      return new Response(JSON.stringify({ error: { code: 'invalid_prompt', message: 'unsupported' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ error: { code: 'invalid_prompt', message: 'model not supported' } }), { status: 400, headers: { 'content-type': 'application/json' } });
     }
     return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'deepseek-v4-flash', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -357,7 +357,7 @@ test('logs responses_unsupported only once per model', async () => {
   const events = [];
   const fetchImpl = async (url) => {
     if (url.endsWith('/responses')) {
-      return new Response(JSON.stringify({ error: { code: 'invalid_prompt', message: 'unsupported' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+      return new Response(JSON.stringify({ error: { code: 'invalid_prompt', message: 'model not supported' } }), { status: 400, headers: { 'content-type': 'application/json' } });
     }
     return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'deepseek-v4-flash', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
   };
@@ -369,6 +369,88 @@ test('logs responses_unsupported only once per model', async () => {
   });
   const unsupported = events.filter((e) => e.event === 'api_fallback' && e.reason === 'responses_unsupported');
   assert.equal(unsupported.length, 1, 'expected exactly one responses_unsupported log');
+  clearUnsupportedCache();
+});
+
+test('transient 401 auth failures are not cached as unsupported', async () => {
+  clearUnsupportedCache();
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.endsWith('/responses')) {
+      return new Response(JSON.stringify({ error: { message: 'invalid api key' } }), { status: 401, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'chatcmpl-1', created: 1, model: 'deepseek-v4-flash', choices: [{ message: { role: 'assistant', content: 'ok' } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {} }, fetchImpl, async (base) => {
+    const make = () => fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5.6-sol', stream: false, input: [] }) });
+    await make();
+    await make();
+  });
+  assert.equal(calls.length, 4, 'expected responses+chat for each request');
+  assert.equal(calls[0], 'https://x/v1/responses');
+  assert.equal(calls[2], 'https://x/v1/responses');
+  clearUnsupportedCache();
+});
+
+test('unsupported cache is per provider and does not poison other models', async () => {
+  clearUnsupportedCache();
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url, body });
+    if (url.includes('ergou1') && body.model === 'gpt-5.6-sol') {
+      return new Response(JSON.stringify({ error: { message: 'Model gpt-5.6-sol is not supported' } }), { status: 401, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response', model: body.model }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const cfg = {
+    apiKey: 'k',
+    models: {
+      'gpt-5.6-sol': { upstream: 'responses', endpoint: ['https://ergou1/v1', 'https://ergou2/v1'], apiKey: 'ek' },
+      'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://ergou1/v1', apiKey: 'ek' }
+    }
+  };
+  await withServer(cfg, fetchImpl, async (base) => {
+    const req = (model) => fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, stream: false, input: [] }) });
+    const r1 = await req('gpt-5.6-sol');
+    assert.equal(r1.status, 200);
+    const r2 = await req('gpt-5.6-luna');
+    assert.equal(r2.status, 200);
+  });
+  assert.deepEqual(calls.map((c) => c.url), [
+    'https://ergou1/v1/responses',
+    'https://ergou2/v1/responses',
+    'https://ergou1/v1/responses'
+  ]);
+  clearUnsupportedCache();
+});
+
+test('unsupported cache expires after TTL and retries upstream', async () => {
+  clearUnsupportedCache();
+  let now = 1_000_000;
+  __setUnsupportedCacheNowForTest(() => now);
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.endsWith('/responses') && calls.filter((c) => c.endsWith('/responses')).length === 1) {
+      return new Response(JSON.stringify({ error: { message: 'Model gpt-5.6-sol is not supported' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response', model: 'gpt-5.6-sol' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  const cfg = { apiKey: 'k', models: { 'gpt-5.6-sol': { upstream: 'responses', endpoint: 'https://ergou/v1', apiKey: 'ek' } } };
+  await withServer(cfg, fetchImpl, async (base) => {
+    const make = () => fetch(base + '/v1/responses', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'gpt-5.6-sol', stream: false, input: [] }) });
+    const r1 = await make();
+    assert.equal(r1.status, 400, 'first request relays upstream unsupported error without chat fallback');
+    const r2 = await make();
+    assert.equal(r2.status, 502, 'cached request is short-circuited');
+    now += UNSUPPORTED_CACHE_TTL_MS + 1;
+    const r3 = await make();
+    assert.equal(r3.status, 200, 'after TTL expiry the upstream is retried');
+  });
+  assert.equal(calls.filter((c) => c.endsWith('/responses')).length, 2);
+  __resetUnsupportedCacheNowForTest();
   clearUnsupportedCache();
 });
 
