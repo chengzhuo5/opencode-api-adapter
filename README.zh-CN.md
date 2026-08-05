@@ -15,6 +15,7 @@
 - 通配符模型配置：`modelPatterns` 用 `gpt-*` 这类模式统一管理一批模型，精确模型条目优先于通配符。
 - 请求日志与用量统计：每次请求追加 JSONL（模型/provider/状态/token/缓存/延迟），`GET /v1/usage` 返回汇总、按模型/provider/天分组的统计。
 - 内置管理页面与桌面 App：浏览器访问 `http://127.0.0.1:15722/admin` 或运行 ewvjs 打包的桌面壳，支持查看状态、编辑配置、用量统计与热重启。
+- Codex 配置管理：一键在 `~/.codex/config.toml` 中加入 `minar_route` provider 并切换 model_provider/model，注释保留原值、每次修改前时间戳备份、还原优先用注释字段，失败才提示从备份恢复。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
 - 支持作为 CLI 启动，也可以导入 `createRouter` 构建自己的 Node HTTP 服务。
 
@@ -215,6 +216,34 @@ sc.exe query CodexRouter     # 查看状态
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Code\AI\opencode-api-adapter\scripts\uninstall-service.ps1
 ```
+
+### Codex 配置管理（minar_route）
+
+管理页「Codex 配置」标签（或 `POST /api/codex/apply`）可以把 Codex 切换到路由接管：
+
+- 新增 `[model_providers.minar_route]`（`name = "米纳尔"`，base_url 指向路由、`wire_api = "responses"`、`requires_openai_auth = true`、`experimental_bearer_token = "PROXY_MANAGED"`）；
+- 顶层 `model_provider` / `model` 替换为 `minar_route` / 目标模型（默认 `gpt-5.6-luna`），**原值以 `# minar_route_original: ...` 注释保留**，其余配置（MCP、features、model_catalog_json、profiles 等）一律不动；
+- 每次修改前把当前文件备份为 `config.toml.<时间戳>.minar_route.bak`；
+- 还原优先按注释字段恢复原值；注释被破坏时返回备份列表，**用户确认后才**从备份文件覆盖。
+
+配置项（`config.json` 的 `codex` 块，默认关闭）：
+
+```json
+{
+  "codex": {
+    "enabled": true,
+    "configPath": "C:/Users/29302/.codex/config.toml",
+    "providerName": "minar_route",
+    "providerDisplayName": "米纳尔",
+    "model": "gpt-5.6-luna",
+    "baseUrl": "http://127.0.0.1:15722/v1",
+    "wireApi": "responses",
+    "authToken": "PROXY_MANAGED"
+  }
+}
+```
+
+改动会在 Codex 下次启动/新会话生效，当前会话不受影响。管理 API：`GET /api/codex`（状态与备份列表）、`POST /api/codex/apply`、`POST /api/codex/restore`（可选 `{ "file": "...", "confirm": true }` 从备份还原）。
 
 ## 上下文压缩（lean-ctx）
 

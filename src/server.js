@@ -15,6 +15,7 @@ import { createLeanCtxClient } from './leanCtxClient.js';
 import { createHealthMonitor } from './health.js';
 import { createCircuitBreaker } from './circuitBreaker.js';
 import { createUsageLogger, createRequestTracker, readUsageLines, aggregateUsage, extractUsage } from './usageLog.js';
+import { createCodexManager } from './codexConfig.js';
 
 const ADMIN_MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -51,6 +52,7 @@ export function createRouter(config, {
       })
     : null;
   const usageLogger = config?.usageLog?.enabled ? createUsageLogger(config) : null;
+  const codex = config?.codex?.enabled ? createCodexManager(config) : null;
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
@@ -141,6 +143,48 @@ export function createRouter(config, {
         setImmediate(() => {
           onRestartCommit?.().catch((e) => logEvent(config, { event: 'admin_restart_failed', reason: String(e?.message || e).slice(0, 300) }));
         });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/codex') {
+        if (!codex) {
+          sendJson(res, 200, { enabled: false });
+          return;
+        }
+        try {
+          sendJson(res, 200, { enabled: true, status: codex.status() });
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: error.message });
+        }
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/codex/apply') {
+        if (!codex) {
+          sendJson(res, 400, { ok: false, error: 'codex 管理未启用（config.codex.enabled）' });
+          return;
+        }
+        try {
+          const result = codex.apply();
+          logEvent(config, { event: 'codex_apply', changed: result.changed, backup: result.backup || null });
+          sendJson(res, 200, result);
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: error.message });
+        }
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/codex/restore') {
+        if (!codex) {
+          sendJson(res, 400, { ok: false, error: 'codex 管理未启用（config.codex.enabled）' });
+          return;
+        }
+        try {
+          let body = {};
+          try { body = await readJson(req); } catch { body = {}; }
+          const result = codex.restore({ file: body?.file, confirm: Boolean(body?.confirm) });
+          logEvent(config, { event: 'codex_restore', restored: result.restored, method: result.method || null });
+          sendJson(res, 200, result);
+        } catch (error) {
+          sendJson(res, 400, { ok: false, error: error.message });
+        }
         return;
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {

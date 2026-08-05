@@ -20,6 +20,9 @@
         <a href="#usage" class="nav-item" data-view="usage">
           <span class="nav-icon">▤</span>用量统计
         </a>
+        <a href="#codex" class="nav-item" data-view="codex">
+          <span class="nav-icon">⌘</span>Codex 配置
+        </a>
         <a href="#config" class="nav-item" data-view="config">
           <span class="nav-icon">⚙</span>配置
         </a>
@@ -102,6 +105,40 @@
             <table>
               <thead><tr><th>Endpoint</th><th>请求</th><th>成功率</th><th>Token 总量</th><th>平均延迟</th></tr></thead>
               <tbody id="providerTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-codex">
+        <div class="cards" id="codexCards"></div>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>minar_route 接管</h2>
+              <span class="hint">只新增 provider 并替换顶层 model_provider/model，其余配置一律不动；每次修改前自动备份</span>
+            </div>
+            <div class="btn-group">
+              <button class="btn primary" id="btnCodexApply" type="button">启用 minar_route</button>
+              <button class="btn ghost" id="btnCodexRestoreMarker" type="button">按注释还原</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>字段</th><th>当前值</th><th>原始值（注释备份）</th></tr></thead>
+              <tbody id="codexFields"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>时间戳备份</h2>
+            <span class="hint">还原失败时可手动选择备份恢复</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>备份文件</th><th>时间</th><th>大小</th><th></th></tr></thead>
+              <tbody id="codexBackups"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
             </table>
           </div>
         </div>

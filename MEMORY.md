@@ -140,3 +140,17 @@
   - PowerShell 5.1 的 `Start-Process` 没有 `-Environment` 参数（PS7 才有）；测试脚本用 `$env:LOCALAPPDATA` 继承。
   - 打包/测试脚本：`desktop/scripts/prep-assets.mjs`（同步资源）、`desktop/scripts/test-packaged.ps1`（临时 LOCALAPPDATA 跑 exe 看 stdout/stderr + healthz）。`desktop/dist`、`desktop/assets` 已 gitignore。
 - 测试：159 个全过（新增 admin 静态页、路径穿越、api/status、api/reload 校验/提交、api/restart）。
+
+## 2026-08-05：Codex config.toml 动态管理（minar_route）
+
+- **功能**（`src/codexConfig.js`，行级编辑零依赖）：
+  - `POST /api/codex/apply`：新增 `[model_providers.minar_route]`（name=米纳尔，base_url=路由 15722，wire_api=responses，requires_openai_auth=true，experimental_bearer_token=PROXY_MANAGED）；顶层 `model_provider`/`model` 替换为 minar_route/gpt-5.6-luna，**原值以 `# minar_route_original: ...` 注释保留**；其余配置（MCP/features/model_catalog_json/profiles 等）一律不动。
+  - 每次修改前备份 `config.toml.<时间戳>.minar_route.bak`（毫秒级时间戳 + 冲突后缀，避免同一秒覆盖）。
+  - 还原两级：优先按注释标记恢复原值并删除 minar_route 块；标记缺失时返回备份列表，**必须用户 `confirm:true` 才从备份覆盖**（覆盖前再备份一次当前状态）。
+  - `GET /api/codex` 只返回脱敏字段（不返回文件原文，不泄露 experimental_bearer_token/CONTEXT7 key）。
+- **已应用到真实配置**：`C:\Users\29302\.codex\config.toml` 现为 minar_route + gpt-5.6-luna，原始 deepseek/deepseek-v4-flash 已注释保留，备份 `config.toml.20260805-200002185.minar_route.bak` 在 `.codex` 目录。Codex 下次启动生效；当前会话不受影响。用户原注释（`# model_provider = "ergou"` 等）未动。
+- **坑**：
+  - 备份文件名秒级时间戳同秒覆盖 → 改用毫秒 + 序号。
+  - `POST /api/codex/restore` 空 body 会 `JSON.parse('')` 抛错 → 接口容错为空对象。
+  - 服务进程热重启只重载配置不重载代码；新增代码必须 `Restart-Service CodexRouter`（sudo）。
+  - 真实 config.toml 里有 secret（experimental_bearer_token、CONTEXT7_API_KEY），任何日志/API/文档都不得输出原文。

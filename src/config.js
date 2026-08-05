@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 export const DEFAULT_CONFIG = {
   host: '127.0.0.1',
@@ -27,6 +28,16 @@ export const DEFAULT_CONFIG = {
     enabled: false,
     file: 'usage/requests.jsonl'
   },
+  codex: {
+    enabled: false,
+    configPath: path.join(os.homedir(), '.codex', 'config.toml'),
+    providerName: 'minar_route',
+    providerDisplayName: '米纳尔',
+    model: 'gpt-5.6-luna',
+    baseUrl: 'http://127.0.0.1:15722/v1',
+    wireApi: 'responses',
+    authToken: 'PROXY_MANAGED'
+  },
   compress: {
     enabled: true,
     backend: 'lean-ctx',
@@ -52,7 +63,8 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     compress: { ...DEFAULT_CONFIG.compress, ...(raw.compress || {}) },
     healthCheck: { ...DEFAULT_CONFIG.healthCheck, ...(raw.healthCheck || {}) },
     circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...(raw.circuitBreaker || {}) },
-    usageLog: { ...DEFAULT_CONFIG.usageLog, ...(raw.usageLog || {}) }
+    usageLog: { ...DEFAULT_CONFIG.usageLog, ...(raw.usageLog || {}) },
+    codex: { ...DEFAULT_CONFIG.codex, ...(raw.codex || {}) }
   };
   const apiKey = env[config.apiKeyEnv];
   if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);

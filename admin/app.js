@@ -7,12 +7,13 @@
   const state = {
     status: null,
     usage: null,
+    codex: null,
     configLoaded: false,
     configDirty: false,
     days: 7
   };
 
-  const VIEW_TITLES = { overview: '总览', usage: '用量统计', config: '配置' };
+  const VIEW_TITLES = { overview: '总览', usage: '用量统计', codex: 'Codex 配置', config: '配置' };
 
   /* ---------- helpers ---------- */
 
@@ -204,6 +205,102 @@
 
   /* ---------- config ---------- */
 
+  async function loadCodex() {
+    try {
+      const data = await api('/api/codex');
+      state.codex = data.enabled ? data.status : null;
+      if (currentView() === 'codex') renderCodex();
+    } catch {
+      state.codex = null;
+    }
+  }
+
+  function renderCodex() {
+    const s = state.codex;
+    if (!s) {
+      $('#codexCards').innerHTML = '<div class="card"><div class="label">Codex 管理</div><div class="value">未启用</div><div class="sub">config.codex.enabled = false</div></div>';
+      $('#codexFields').innerHTML = '<tr><td colspan="3" class="empty">未启用</td></tr>';
+      $('#codexBackups').innerHTML = '<tr><td colspan="4" class="empty">—</td></tr>';
+      return;
+    }
+    const cards = [
+      {
+        label: 'minar_route',
+        value: s.applied ? '已应用' : '未应用',
+        sub: s.provider.blockExists ? 'provider 块已存在' : 'provider 块待创建'
+      },
+      { label: 'model_provider', value: s.activeModelProvider || '—', sub: `原始: ${s.originalModelProvider || '无标记'}` },
+      { label: 'model', value: s.activeModel || '—', sub: `目标: ${s.provider.model}` },
+      { label: '配置文件', value: s.exists ? '存在' : '缺失', sub: s.configPath }
+    ];
+    $('#codexCards').innerHTML = cards.map((c) => `
+      <div class="card"><div class="label">${c.label}</div><div class="value">${escapeHtml(c.value)}</div><div class="sub">${escapeHtml(c.sub || '')}</div></div>
+    `).join('');
+
+    const rows = [
+      ['model_provider', s.activeModelProvider || '—', s.originalModelProvider || '—'],
+      ['model', s.activeModel || '—', s.originalModel || '—'],
+      ['provider.name', s.provider.displayName, ''],
+      ['provider.base_url', s.provider.baseUrl || '—', ''],
+      ['model_catalog_json', s.modelCatalogJsonPresent ? '已配置' : '未配置（模型列表可能为空）', '']
+    ];
+    $('#codexFields').innerHTML = rows.map(([k, v, o]) => `
+      <tr><td class="mono">${escapeHtml(k)}</td><td>${escapeHtml(v)}</td><td class="mono">${escapeHtml(o)}</td></tr>
+    `).join('');
+
+    const backups = (s.backups || []).map((b) => `
+      <tr>
+        <td class="mono">${escapeHtml(b.name)}</td>
+        <td>${new Date(b.mtime).toLocaleString()}</td>
+        <td>${fmtInt(b.size)} B</td>
+        <td><button class="btn ghost" type="button" data-backup="${escapeHtml(b.file)}">从该备份还原</button></td>
+      </tr>
+    `).join('');
+    $('#codexBackups').innerHTML = backups || '<tr><td colspan="4" class="empty">暂无备份</td></tr>';
+    $$('#codexBackups [data-backup]').forEach((btn) => btn.addEventListener('click', () => restoreFromBackup(btn.dataset.backup)));
+  }
+
+  async function applyCodex() {
+    $('#btnCodexApply').disabled = true;
+    try {
+      const r = await api('/api/codex/apply', { method: 'POST' });
+      toast(r.changed ? '已启用 minar_route，重启 Codex 会话后生效' : '已是 minar_route 状态', r.changed ? 'ok' : 'warn');
+      await loadCodex();
+    } catch (error) {
+      toast('启用失败: ' + error.message, 'err');
+    } finally {
+      $('#btnCodexApply').disabled = false;
+    }
+  }
+
+  async function restoreCodexMarker() {
+    $('#btnCodexRestoreMarker').disabled = true;
+    try {
+      const r = await api('/api/codex/restore', { method: 'POST' });
+      if (r.restored) {
+        toast(`已按注释还原（${r.method}），重启 Codex 会话后生效`, 'ok');
+      } else if (r.needsBackup) {
+        toast('注释字段缺失，无法自动还原：请从下方备份选择恢复', 'warn');
+      }
+      await loadCodex();
+    } catch (error) {
+      toast('还原失败: ' + error.message, 'err');
+    } finally {
+      $('#btnCodexRestoreMarker').disabled = false;
+    }
+  }
+
+  async function restoreFromBackup(file) {
+    if (!confirm('确定用该备份覆盖 config.toml？当前状态会先自动备份。')) return;
+    try {
+      const r = await api('/api/codex/restore', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ file, confirm: true }) });
+      toast(r.restored ? '已从备份还原，重启 Codex 会话后生效' : '还原未完成', r.restored ? 'ok' : 'warn');
+      await loadCodex();
+    } catch (error) {
+      toast('还原失败: ' + error.message, 'err');
+    }
+  }
+
   async function loadConfig() {
     if (state.configDirty) return;
     try {
@@ -260,6 +357,7 @@
       $('#serverMeta').textContent = `${data.host}:${data.port} · ${data.config.models} 个精确模型 · ${data.config.modelPatterns.length} 个通配模式`;
       if (currentView() === 'overview') renderOverview();
       if (currentView() === 'usage') { state.usage = data.usage; renderUsage(); }
+      if (currentView() === 'codex') loadCodex();
       if (currentView() === 'config' && !state.configLoaded) loadConfig();
     } catch {
       if (offlineSince === null) offlineSince = Date.now();
@@ -296,6 +394,7 @@
     $$('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + view));
     $('#pageTitle').textContent = VIEW_TITLES[view] || '总览';
     if (view === 'usage') pollUsage();
+    if (view === 'codex') loadCodex();
     if (view === 'config') loadConfig();
   }
 
@@ -314,6 +413,8 @@
   $('#btnSave').addEventListener('click', saveConfig);
   $('#btnRestart').addEventListener('click', restartService);
   $('#btnRevert').addEventListener('click', () => { if (state.configLoaded) { state.configDirty = false; loadConfig(); } });
+  $('#btnCodexApply').addEventListener('click', applyCodex);
+  $('#btnCodexRestoreMarker').addEventListener('click', restoreCodexMarker);
   $('#configEditor').addEventListener('input', () => { state.configDirty = true; });
   $('#usageDays').addEventListener('change', (e) => { state.days = Number(e.target.value); pollUsage(); });
 

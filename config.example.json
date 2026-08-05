@@ -36,6 +36,16 @@
     "enabled": true,
     "file": "usage/requests.jsonl"
   },
+  "codex": {
+    "enabled": true,
+    "configPath": "C:/Users/<用户名>/.codex/config.toml",
+    "providerName": "minar_route",
+    "providerDisplayName": "米纳尔",
+    "model": "gpt-5.6-luna",
+    "baseUrl": "http://127.0.0.1:15722/v1",
+    "wireApi": "responses",
+    "authToken": "PROXY_MANAGED"
+  },
   "compress": {
     "enabled": true,
     "backend": "lean-ctx",

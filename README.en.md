@@ -15,6 +15,7 @@
 - Wildcard model config: `modelPatterns` applies one provider block to many models (`gpt-*`); exact `models` entries always win.
 - Request log and usage stats: every request appends one JSONL line (model/provider/status/tokens/cache/latency), and `GET /v1/usage` returns totals plus per-model/provider/day breakdowns.
 - Built-in admin UI and desktop app: open `http://127.0.0.1:15722/admin` in a browser, or run the ewvjs-packaged desktop shell, to view status, edit config, inspect usage, and hot-restart the router.
+- Codex config management: one click adds a `minar_route` provider to `~/.codex/config.toml` and switches `model_provider`/`model`, keeping the originals as commented markers, backing up before every change, and restoring from markers first (timestamped backups only with explicit user confirmation).
 - Structured console logs report multimodal and API fallback events without logging API keys, full prompts, or image data.
 - Usable as a CLI or imported as a Node HTTP server.
 
@@ -210,6 +211,34 @@ Uninstall and restore the watchdog:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File C:\Code\AI\opencode-api-adapter\scripts\uninstall-service.ps1
 ```
+
+### Codex config management (minar_route)
+
+The "Codex 配置" tab in the admin UI (or `POST /api/codex/apply`) switches Codex to the router:
+
+- Adds `[model_providers.minar_route]` (`name = "米纳尔"`, base_url pointing at the router, `wire_api = "responses"`, `requires_openai_auth = true`, `experimental_bearer_token = "PROXY_MANAGED"`);
+- Replaces the top-level `model_provider` / `model` with `minar_route` / the target model (default `gpt-5.6-luna`), keeping the originals as `# minar_route_original: ...` comment lines; every other setting (MCP servers, features, model_catalog_json, profiles) is left untouched;
+- Backs up the current file as `config.toml.<timestamp>.minar_route.bak` before every change;
+- Restore prefers the commented originals; if the markers are gone it lists backups and only overwrites after explicit user confirmation.
+
+Configuration (`codex` block in `config.json`, disabled by default):
+
+```json
+{
+  "codex": {
+    "enabled": true,
+    "configPath": "C:/Users/29302/.codex/config.toml",
+    "providerName": "minar_route",
+    "providerDisplayName": "米纳尔",
+    "model": "gpt-5.6-luna",
+    "baseUrl": "http://127.0.0.1:15722/v1",
+    "wireApi": "responses",
+    "authToken": "PROXY_MANAGED"
+  }
+}
+```
+
+Changes take effect on the next Codex start; the current session is unaffected. Admin APIs: `GET /api/codex`, `POST /api/codex/apply`, `POST /api/codex/restore` (with optional `{ "file": "...", "confirm": true }`).
 
 ## Context compression (lean-ctx)
 
