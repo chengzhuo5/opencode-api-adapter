@@ -5,12 +5,20 @@ $ErrorActionPreference = 'Continue'
 $routerDir = 'C:\Code\AI\opencode-api-adapter'
 $logDir = Join-Path $routerDir 'logs'
 $nodeExe = 'C:\Program Files\nodejs\node.exe'
-$leanCtxExe = 'C:\ProgramData\npm\npm\node_modules\lean-ctx-bin\bin\lean-ctx.exe'
 
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 function Get-UserEnv([string]$name) {
   try { return (Get-ItemProperty 'HKCU:\Environment' -ErrorAction Stop).$name } catch { return $null }
+}
+
+function Resolve-LeanCtx {
+  $lines = & where.exe lean-ctx 2>$null
+  if ($LASTEXITCODE -ne 0 -or -not $lines) { return $null }
+  $exe = $lines | Where-Object { $_ -match '\.exe$' } | Select-Object -First 1
+  if (-not $exe) { $exe = $lines | Select-Object -First 1 }
+  if ($exe) { return $exe.Trim() }
+  return $null
 }
 
 function Test-Port([int]$port) {
@@ -19,6 +27,11 @@ function Test-Port([int]$port) {
 
 function Write-Log([string]$message) {
   Add-Content -LiteralPath (Join-Path $logDir 'watchdog.log') -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $message"
+}
+
+$leanCtxExe = Resolve-LeanCtx
+if (-not $leanCtxExe) {
+  Write-Log 'WARN lean-ctx.exe not found; compression daemon will not be started'
 }
 
 function Start-Router {
@@ -31,6 +44,7 @@ function Start-Router {
 }
 
 function Start-LeanCtx {
+  if (-not $leanCtxExe) { return }
   Start-Process -FilePath $leanCtxExe -ArgumentList 'proxy','start','--port=4444' -WindowStyle Hidden
   Write-Log 'lean-ctx daemon start requested'
 }

@@ -45,7 +45,7 @@
 
 **现象**：`tokens_saved` 变 0。根因是 lean-ctx proxy（4444）没运行（机器重启后未自启），压缩请求全部 `backend_unavailable` 降级。
 
-**恢复**：`Start-Process lean-ctx.exe proxy start --port=4444`（本机 exe：`C:\ProgramData\npm\npm\node_modules\lean-ctx-bin\bin\lean-ctx.exe`）。
+**恢复**：`Start-Process lean-ctx.exe proxy start --port=4444`。本机 exe 由 `where.exe lean-ctx` 定位（实际在 `C:\Users\29302\.local\bin\lean-ctx.exe`），不要写死 npm 安装路径。
 
 **注意**：`scripts/start-router-watchdog.ps1` 是另一台机器的路径（C:\Code\AI、用户 29302），本机需适配后使用。
 
@@ -96,6 +96,7 @@
   - 坑：open 超时切 half_open 时，当前探测请求必须消耗唯一的 permit（halfOpenPermits 置 0），否则并发请求都能放行。
   - 配置：`circuitBreaker.enabled` 等见 config.example.json；本地 config.json 已启用（3/2/60s/0.6/5）。
 - **watchdog 路径 bug**：commit a7d29b8 把 `scripts/start-router-watchdog.ps1` 的 `$routerDir` 错改成 `C:\Users\cheng\Documents\...`（另一台机器路径），而任务计划程序 `opencode-router-watchdog` 执行的是本仓库脚本——路由挂掉会被拉到错误目录。已改回 `C:\Code\AI\opencode-api-adapter`，并给 watchdog/restart 脚本补注入 `DEEPSEEK_API_KEY`（原来只注入 ERGOU/OPENCODE）。
+- **watchdog 的 lean-ctx 路径**：脚本里写死的 `C:\ProgramData\npm\npm\node_modules\lean-ctx-bin\bin\lean-ctx.exe` 在本机不存在，导致 `Start-Process` 每 10 秒报「系统找不到指定的文件」。已改为 `where.exe lean-ctx` 动态解析（取第一个 `.exe` 结果，当前命中 `C:\Users\29302\.local\bin\lean-ctx.exe`），找不到时只记 WARN 不报错。
 
 ## 2026-08-05：模型通配符配置 + 请求日志/用量统计
 
