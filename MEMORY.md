@@ -212,3 +212,11 @@
 - **症状**：报 `invalid patch: The first line of the patch must be '*** Begin Patch'`，重试多轮仍失败。
 - **根因**：把补丁文本多包了一层 JSON 对象字符串传进 `arguments`，工具解析后第一行变成 `{...}` 而非 `*** Begin Patch`。正确用法是 `arguments` 的值等于补丁文本本身（仅 JSON 转义），`*** Begin Patch` 必须是第一行。
 - **应对**：确认格式后已恢复 apply_patch；万一再次失败，小改动可用精确字符串替换脚本（Node readFileSync/writeFileSync + 唯一锚点校验），并用 `git diff` 全量审计。
+
+## 2026-08-05：apply_patch 从 chat/completions 还原为 custom_tool_call（已修复）
+
+- **现象**：Codex 会话报 `apply_patch invoked with incompatible payload`。
+- **根因**：`apply_patch` 是 freeform 工具，请求方向以 `custom_tool_call` 发出；但 chat/completions 上游把 input 转义成 `function.arguments` 字符串返回，路由直接转成 `function_call`，Codex handler 收到不兼容 payload。
+- **修复**（`src/translate/chatToResponses.js`）：非流式 `chatToResponsesObject` 与流式 `translateChatStreamToResponses` 两条路径都检测 `name === 'apply_patch'`，把 `function.arguments` 里 JSON 转义的字符串反转义为 `input`，输出 `custom_tool_call`（保留 call_id），并发出 `response.custom_tool_call.done`。其他工具维持 `function_call`。
+- **测试**：`test/chatToResponses.test.js` 新增 2 个用例（非流式/流式 apply_patch 还原）；**172 测试全过**。已提交 `744c6b3` 并推送，服务重启（PID 41804）验证转换正确。
+- **注意**：该修复是用户手动写的代码（工作区未提交时我确认后补了测试），不是路由自动生成的。
