@@ -2,6 +2,32 @@
 
 记录值得留存的排查结论与运维要点（按时间追加）。
 
+## 2026-08-05：function_call_output requires previous_response_id / item_reference（gpt 会话 400）
+
+**现象**：deepseek 会话切到 gpt（ergou /v1/responses）后，Codex 报
+`function_call_output requires previous_response_id or item_reference ids matching each call_id`，
+日志里 ergou 返回 400（usage/requests.jsonl 中 status=400、error=http_error）。
+
+**根因**：gpt-* 配置了 `maxHistoryMessages: 10`，`truncateHistory` 只保证截断后开头不是
+孤立的 `function_call_output`，但一轮并行工具可能被从中间切掉：窗口内保留了后面的
+`function_call_output`，却丢掉了它对应的 `function_call`。ergou 对完整重放的
+Responses 历史要求每个 `function_call_output.call_id` 都能匹配到输入里的
+`function_call`，否则报上述错误。chat 适配层（sanitizeChatToolMessages）早就修过同类
+问题，但 Responses 直通路径没有等价清理。
+
+**修复**：`src/translate/responsesContext.js` 新增 `sanitizeResponsesToolPairs`，
+在 `normalizeResponsesRequest` 里按 call_id 配对：只剔除没有可匹配 function_call 的
+孤立 function_call_output（含 custom_tool_call_output）；未收到输出的 function_call
+保留（chat→responses 历史往返依赖它）。截断造成的“输出还在、调用被切掉”的孤儿项不再
+转发。
+
+**验证**：从真实会话 rollout 提取了出错前的最后 10 项复现；新增 2 个回归测试
+（test/server.test.js），全套 174 测试通过。
+
+**运维**：改代码后需**重启进程**才能生效（in-process /api/restart 不会重新加载源码）；
+当前 shell 无法提权重启 CodexRouter 服务，需用户执行
+`sudo powershell -NoProfile -Command "Restart-Service CodexRouter"`（或 NSSM 重启）。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

@@ -7,9 +7,9 @@ export function inputItems(input) {
 export function normalizeResponsesRequest(body) {
   const request = { ...body };
   if (body.input !== undefined) {
-    request.input = inputItems(body.input)
+    request.input = sanitizeResponsesToolPairs(inputItems(body.input)
       .map(normalizeResponsesItem)
-      .filter((item) => item !== null);
+      .filter((item) => item !== null));
   }
   // The router cannot resolve a response created by another protocol. When the
   // full input is present, replay it instead of forwarding a stale provider ID.
@@ -94,6 +94,32 @@ function normalizeResponsesItem(item) {
   if (item.type === 'reasoning') return null;
 
   return stripInternalFields(item);
+}
+
+/**
+ * Responses 直通路径不允许出现没有对应 function_call 的 function_call_output。
+ * 旧会话里被中断/截断的工具轮次会留下孤立输出（例如 maxHistoryMessages 从一轮
+ * 工具的中间切掉），ergou 等兼容端点会报
+ * "function_call_output requires previous_response_id or item_reference ids
+ * matching each call_id"。这里只剔除没有可匹配 function_call 的
+ * function_call_output；尚未收到输出应答的 function_call 保留，因为它是
+ * 上一轮可能仍待执行的调用（chat 转 responses 的历史往返也依赖这一点）。
+ */
+export function sanitizeResponsesToolPairs(items) {
+  const callIds = new Set();
+  for (const item of items) {
+    if (item && typeof item === 'object'
+      && (item.type === 'function_call' || item.type === 'custom_tool_call')
+      && item.call_id) {
+      callIds.add(item.call_id);
+    }
+  }
+  return items.filter((item) => (
+    !item
+    || typeof item !== 'object'
+    || !(item.type === 'function_call_output' || item.type === 'custom_tool_call_output')
+    || (item.call_id && callIds.has(item.call_id))
+  ));
 }
 
 function normalizeContent(content) {

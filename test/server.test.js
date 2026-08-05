@@ -496,6 +496,39 @@ test('normalizeResponsesRequest maps custom tool items to function items', () =>
   ]);
 });
 
+test('normalizeResponsesRequest drops orphan tool outputs and keeps unanswered calls', () => {
+  const request = normalizeResponsesRequest({
+    model: 'gpt-5.6-sol',
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'run' }] },
+      { type: 'function_call', call_id: 'call_pending', name: 'shell_command', arguments: '{}' },
+      { type: 'function_call', call_id: 'call_ok', name: 'shell_command', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_orphan', output: 'no matching call' },
+      { type: 'function_call_output', call_id: 'call_ok', output: 'ok' }
+    ]
+  });
+  assert.deepEqual(request.input.map((i) => i.type), ['message', 'function_call', 'function_call', 'function_call_output']);
+  assert.deepEqual(request.input.map((i) => i.call_id || '').filter(Boolean), ['call_pending', 'call_ok', 'call_ok']);
+});
+
+test('normalizeResponsesRequest repairs truncation that split a tool round', () => {
+  const truncated = {
+    input: [
+      { type: 'function_call', call_id: 'call_b', name: 'shell_command', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_a', output: 'orphan a' },
+      { type: 'function_call_output', call_id: 'call_b', output: 'ok b' },
+      { type: 'function_call', call_id: 'call_c', name: 'shell_command', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'call_c', output: 'ok c' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'continue' }] }
+    ]
+  };
+  const request = normalizeResponsesRequest({ model: 'gpt-5.6-sol', input: truncated.input });
+  const callIds = request.input.filter((i) => i.type === 'function_call').map((i) => i.call_id);
+  const outputIds = request.input.filter((i) => i.type === 'function_call_output').map((i) => i.call_id);
+  assert.deepEqual(callIds, ['call_b', 'call_c']);
+  assert.deepEqual(outputIds, ['call_b', 'call_c']);
+});
+
 test('normalizeResponsesRequest strips legacy item ids before forwarding', () => {
   const request = normalizeResponsesRequest({
     model: 'gpt-5.6-luna',
