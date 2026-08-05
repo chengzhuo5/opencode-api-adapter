@@ -97,6 +97,8 @@
   - 配置：`circuitBreaker.enabled` 等见 config.example.json；本地 config.json 已启用（3/2/60s/0.6/5）。
 - **watchdog 路径 bug**：commit a7d29b8 把 `scripts/start-router-watchdog.ps1` 的 `$routerDir` 错改成 `C:\Users\cheng\Documents\...`（另一台机器路径），而任务计划程序 `opencode-router-watchdog` 执行的是本仓库脚本——路由挂掉会被拉到错误目录。已改回 `C:\Code\AI\opencode-api-adapter`，并给 watchdog/restart 脚本补注入 `DEEPSEEK_API_KEY`（原来只注入 ERGOU/OPENCODE）。
 - **watchdog 的 lean-ctx 路径**：脚本里写死的 `C:\ProgramData\npm\npm\node_modules\lean-ctx-bin\bin\lean-ctx.exe` 在本机不存在，导致 `Start-Process` 每 10 秒报「系统找不到指定的文件」。已改为 `where.exe lean-ctx` 动态解析（取第一个 `.exe` 结果，当前命中 `C:\Users\29302\.local\bin\lean-ctx.exe`），找不到时只记 WARN 不报错。
+- **watchdog 黑框问题**：任务计划程序直接跑 `powershell.exe -WindowStyle Hidden -File start-router-watchdog.ps1`，在本机会创建一个可见的 `PseudoConsoleWindow`（空标题黑框）。已改为任务执行 `wscript.exe scripts\start-router-watchdog.vbs`，VBS 用 `WScript.Shell.Run(..., 0, False)` 以完全隐藏方式拉起 powershell，控制台窗口根本不创建。验证：桌面可见控制台窗口数 = 0。
+  - 桌面壳开发模式同理：`desktop/start-app.vbs` 双击启动 `node app.js` 无黑框；正式使用建议直接跑打包的 `CodexRouter.exe`（GUI 子系统，无控制台）。
 
 ## 2026-08-05：模型通配符配置 + 请求日志/用量统计
 
