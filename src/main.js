@@ -107,6 +107,11 @@ if (isCli) {
         await router.stop();
         process.exit(0);
       });
+      // Windows 服务（NSSM）停止时发送 Ctrl+C，Node 收到 SIGINT
+      process.on('SIGINT', async () => {
+        await router.stop();
+        process.exit(0);
+      });
     })
     .catch((error) => {
       console.error('router failed to start:', error);

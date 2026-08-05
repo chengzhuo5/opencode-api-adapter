@@ -100,6 +100,17 @@
 - **watchdog 黑框问题**：任务计划程序直接跑 `powershell.exe -WindowStyle Hidden -File start-router-watchdog.ps1`，在本机会创建一个可见的 `PseudoConsoleWindow`（空标题黑框）。已改为任务执行 `wscript.exe scripts\start-router-watchdog.vbs`，VBS 用 `WScript.Shell.Run(..., 0, False)` 以完全隐藏方式拉起 powershell，控制台窗口根本不创建。验证：桌面可见控制台窗口数 = 0。
   - 桌面壳开发模式同理：`desktop/start-app.vbs` 双击启动 `node app.js` 无黑框；正式使用建议直接跑打包的 `CodexRouter.exe`（GUI 子系统，无控制台）。
 
+## 2026-08-05：路由注册为 Windows 服务（NSSM）成功
+
+- **现状**：服务 `CodexRouter` 已安装并 RUNNING，`node src/main.js` 由 NSSM 2.24 托管（nssm.exe 下载在 `%LOCALAPPDATA%\CodexRouter\nssm`）。LocalSystem 运行，AUTO_START，崩溃 5 秒自动重启，stdout/stderr 轮转 10MB 写入 `logs\`，停止时 AppStopMethodConsole 发 Ctrl+C（main.js 已补 SIGINT 优雅停止）。15722 端口 owner 的父进程 = nssm 服务进程（验证过）。
+- **API key**：LocalSystem 读不到 HKCU 环境变量，安装脚本把 `OPENCODE_GO_API_KEY/ERGOUAPI_API_KEY/DEEPSEEK_API_KEY` 从 HKCU\Environment 注入服务环境（存在服务配置 Parameters，仅管理员可读）。
+- **watchdog 关系**：`opencode-router-watchdog` 计划任务已禁用（服务接管保活）；服务不管理 lean-ctx（compress.enabled=false，不需要）。卸载：`scripts\uninstall-service.ps1`（管理员）会删服务并恢复计划任务。
+- **坑（重要）**：
+  - PowerShell 5.1 解析**无 BOM 的 UTF-8 中文 .ps1** 会按 ANSI 误读，字符串引号错乱 → 解析失败，sudo 窗口一闪而过且不留任何日志。所有中文 .ps1 必须存成 UTF-8 with BOM（`install-service.ps1`/`uninstall-service.ps1`/`start-router-watchdog.ps1`/`restart-router.ps1` 已转）。
+  - Windows sudo 默认 forceNewWindow，stdout 看不到 → 安装脚本用 try/catch + `logs\service-install.log` 记录每一步。
+  - 安装顺序必须先停 watchdog 再停路由：否则 watchdog 的 10s 循环会在停路由后抢拉起新实例，服务 node 绑定 15722 失败（sc 显示 PAUSED，healthz 实际来自孤儿路由）。现脚本已按「禁用任务 → 杀 watchdog → 停路由并等端口释放 → 起服务 → 校验端口 owner 是服务子进程」执行。
+  - 管理页热加载/重启仍是进程内操作，服务不受影响；服务级操作 `sc.exe stop/start/query CodexRouter`。
+
 ## 2026-08-05：模型通配符配置 + 请求日志/用量统计
 
 - **`modelPatterns` 通配配置**（用户要求不要每个 gpt 模型单独写）：`routes.js` 新增 `matchModelPattern`/`getModelEntry`——`*` 匹配任意串、`?` 匹配单字符，多个模式命中取更长者；优先级：精确 `models` 条目 > 通配 > 默认路由。`config.js` 对 patterns 同样归一化 apiKey/endpoint；`catalog.js` 的 contextWindow 也走 `getModelEntry`。本地 config.json 已把 6 个 gpt 条目收敛成 `"gpt-*"` 一条（ergou + 353K + maxHistory 10），deepseek-v4-flash 仍是精确条目。

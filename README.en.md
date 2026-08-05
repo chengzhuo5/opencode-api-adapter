@@ -186,6 +186,31 @@ npm run package        # package: dist/CodexRouter.exe + assets/ (portable folde
 
 On first run the packaged exe seeds `%LOCALAPPDATA%\CodexRouter` (config/admin/catalog/usage/logs all live there) and runs the router inside the app process; closing the window stops it. If port 15722 is already in use (e.g. the watchdog is running), it attaches to the running router instead of starting another.
 
+### Register as a Windows service (optional)
+
+For start-before-login, auto-start on boot, and crash-restart, register the router as a Windows service (powered by [NSSM](https://nssm.cc)):
+
+```powershell
+# Run as Administrator:
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Code\AI\opencode-api-adapter\scripts\install-service.ps1
+```
+
+The installer downloads NSSM to `%LOCALAPPDATA%\CodexRouter\nssm`, creates the auto-start `CodexRouter` service (`node src/main.js`) with 5s restart delay and rotating logs, injects the three API keys from `HKCU\Environment` into the service environment (the service runs as LocalSystem, which cannot see per-user environment variables), and disables the `opencode-router-watchdog` scheduled task to avoid port conflicts.
+
+The admin UI keeps working after installation (`http://127.0.0.1:15722/admin`); hot reload/restart from the page is still in-process. Service-level control:
+
+```powershell
+sc.exe stop CodexRouter
+sc.exe start CodexRouter
+sc.exe query CodexRouter
+```
+
+Uninstall and restore the watchdog:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Code\AI\opencode-api-adapter\scripts\uninstall-service.ps1
+```
+
 ## Context compression (lean-ctx)
 
 The router compresses only `function_call_output` (tool outputs) in history, keeping the message structure and user/assistant instructions intact to avoid semantic loss. The backend is a local [lean-ctx](https://github.com/yvgude/lean-ctx) daemon.

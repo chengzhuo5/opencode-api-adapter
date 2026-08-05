@@ -186,6 +186,36 @@ npm run package        # 打包：dist/CodexRouter.exe + assets/（便携目录�
 
 打包后的 exe 首次运行会把资源种子到 `%LOCALAPPDATA%\CodexRouter`（config/admin/catalog/usage/logs 都在该目录），路由在 App 进程内运行，关闭窗口即停止；若 15722 已被占用（如 watchdog 在跑）则只打开窗口接管，不重复启动。
 
+### 注册为 Windows 服务（可选）
+
+想开机即起、登录前就可用、崩溃自动重启，可以把路由注册成 Windows 服务（基于 [NSSM](https://nssm.cc)，单 exe 包装器）：
+
+```powershell
+# 右键“以管理员身份运行”：
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Code\AI\opencode-api-adapter\scripts\install-service.ps1
+```
+
+安装脚本会：
+
+- 下载 NSSM 到 `%LOCALAPPDATA%\CodexRouter\nssm`（不污染仓库）；
+- 创建自启服务 `CodexRouter`（`node src/main.js`），崩溃后 5 秒自动重启，stdout/stderr 轮转写入 `logs\`；
+- 从 `HKCU\Environment` 读取三个 API key 注入服务环境（服务以 LocalSystem 运行，读不到用户环境变量；key 存在服务配置中，仅管理员可读）；
+- 自动禁用 `opencode-router-watchdog` 计划任务，避免与路由抢 15722。
+
+服务安装后管理页照常可用（`http://127.0.0.1:15722/admin`），网页里的「热加载/重启」仍是进程内操作，不受服务管理影响。服务级操作：
+
+```powershell
+sc.exe stop CodexRouter      # 停止
+sc.exe start CodexRouter     # 启动
+sc.exe query CodexRouter     # 查看状态
+```
+
+卸载并恢复 watchdog：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Code\AI\opencode-api-adapter\scripts\uninstall-service.ps1
+```
+
 ## 上下文压缩（lean-ctx）
 
 路由只对历史中的 `function_call_output`（工具输出）做确定性压缩，消息结构与用户/助手指令保持原样，避免语义丢失。后端为本地 [lean-ctx](https://github.com/yvgude/lean-ctx) daemon。
