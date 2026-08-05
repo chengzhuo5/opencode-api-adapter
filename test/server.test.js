@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRouter } from '../src/server.js';
@@ -48,6 +48,43 @@ test('ctx endpoint returns archived output by hash', async () => {
     const data = await res.json();
     assert.equal(data.output, 'original payload');
   });
+});
+
+test('usage endpoint reports logged request', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-http-'));
+  const file = path.join(dir, 'requests.jsonl');
+  const fetchImpl = async (url) => {
+    if (url.endsWith('/responses')) {
+      return new Response(JSON.stringify({
+        id: 'resp_1',
+        object: 'response',
+        model: 'gpt-5.6-luna',
+        usage: { input_tokens: 10, output_tokens: 5 }
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error('unexpected upstream: ' + url);
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    usageLog: { enabled: true, file }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] })
+    });
+    assert.equal(res.status, 200);
+    const statsRes = await fetch(base + '/v1/usage?days=7');
+    const stats = await statsRes.json();
+    assert.equal(stats.totalRequests, 1);
+    assert.equal(stats.successRate, 1);
+    assert.equal(stats.totalInputTokens, 10);
+    assert.equal(stats.totalOutputTokens, 5);
+    assert.equal(stats.perModel['gpt-5.6-luna'].requests, 1);
+  });
+  rmSync(dir, { recursive: true, force: true });
 });
 
 test('ctx endpoint 400s bad hashes and 404s unknown or disabled compression', async () => {
@@ -389,4 +426,3 @@ test('normalizeResponsesRequest strips legacy item ids before forwarding', () =>
   });
   assert.equal(request.input.some((item) => Object.hasOwn(item, 'id')), false);
 });
-

@@ -1,3 +1,5 @@
+import { MODEL_META } from './modelMeta.js';
+
 export const DEFAULT_MODEL_ROUTES = {
   'gpt-5.4-mini': 'responses',
   'gpt-5.4': 'responses',
@@ -32,8 +34,32 @@ export class UnknownModelError extends Error {
   }
 }
 
+/**
+ * 通配符匹配（`*` 匹配任意串，`?` 匹配单字符），返回匹配到的 pattern 键。
+ * 多个 pattern 命中时取更具体的（pattern 字符串更长者优先）。
+ */
+export function matchModelPattern(config, model) {
+  const patterns = Object.keys(config?.modelPatterns || {});
+  if (!patterns.length || typeof model !== 'string') return null;
+  const candidates = patterns
+    .filter((pattern) => {
+      const re = new RegExp('^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$');
+      return re.test(model);
+    })
+    .sort((a, b) => b.length - a.length);
+  return candidates[0] || null;
+}
+
+/** 获取模型生效配置：精确 models 条目 > modelPatterns 通配 > 空对象。 */
+export function getModelEntry(config, model) {
+  if (config?.models?.[model]) return config.models[model];
+  const pattern = matchModelPattern(config, model);
+  if (pattern) return config.modelPatterns[pattern];
+  return {};
+}
+
 export function resolveRoute(config, model) {
-  const entry = config.models?.[model];
+  const entry = getModelEntry(config, model);
   const upstream = entry?.upstream ?? DEFAULT_MODEL_ROUTES[model];
   if (!upstream) throw new UnknownModelError(model);
   const effective = upstream === 'messages' ? 'messages' : upstream === 'chat' ? 'chat' : 'responses';
@@ -61,6 +87,7 @@ export function resolveRoute(config, model) {
   return {
     model,
     upstream: effective,
+    entry,
     endpoint: unique[0]?.endpoint,
     apiKey: unique[0]?.apiKey,
     fallbackEndpoint: unique[1]?.endpoint ?? null,
@@ -71,7 +98,11 @@ export function resolveRoute(config, model) {
 }
 
 export function listRoutedModels(config) {
-  const ids = new Set([...Object.keys(DEFAULT_MODEL_ROUTES), ...Object.keys(config.models || {})]);
+  const ids = new Set([
+    ...Object.keys(DEFAULT_MODEL_ROUTES),
+    ...Object.keys(config.models || {}),
+    ...Object.keys(MODEL_META)
+  ]);
   return [...ids].filter((id) => {
     const upstream = config.models?.[id]?.upstream ?? DEFAULT_MODEL_ROUTES[id];
     return upstream === 'responses' || upstream === 'chat' || upstream === 'messages';

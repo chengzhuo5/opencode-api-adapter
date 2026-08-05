@@ -96,3 +96,15 @@
   - 坑：open 超时切 half_open 时，当前探测请求必须消耗唯一的 permit（halfOpenPermits 置 0），否则并发请求都能放行。
   - 配置：`circuitBreaker.enabled` 等见 config.example.json；本地 config.json 已启用（3/2/60s/0.6/5）。
 - **watchdog 路径 bug**：commit a7d29b8 把 `scripts/start-router-watchdog.ps1` 的 `$routerDir` 错改成 `C:\Users\cheng\Documents\...`（另一台机器路径），而任务计划程序 `opencode-router-watchdog` 执行的是本仓库脚本——路由挂掉会被拉到错误目录。已改回 `C:\Code\AI\opencode-api-adapter`，并给 watchdog/restart 脚本补注入 `DEEPSEEK_API_KEY`（原来只注入 ERGOU/OPENCODE）。
+
+## 2026-08-05：模型通配符配置 + 请求日志/用量统计
+
+- **`modelPatterns` 通配配置**（用户要求不要每个 gpt 模型单独写）：`routes.js` 新增 `matchModelPattern`/`getModelEntry`——`*` 匹配任意串、`?` 匹配单字符，多个模式命中取更长者；优先级：精确 `models` 条目 > 通配 > 默认路由。`config.js` 对 patterns 同样归一化 apiKey/endpoint；`catalog.js` 的 contextWindow 也走 `getModelEntry`。本地 config.json 已把 6 个 gpt 条目收敛成 `"gpt-*"` 一条（ergou + 353K + maxHistory 10），deepseek-v4-flash 仍是精确条目。
+- **请求日志 + 用量统计**（`src/usageLog.js`，零依赖 JSONL）：
+  - `createRequestTracker`：每次请求一个 tracker，各 provider 尝试都 record，结束时 finalize 成一行（model/endpoint/status/ok/input/output/cache_read/cache_creation/latency/streamed/error）。
+  - `extractUsage`：兼容 `input_tokens/prompt_tokens`、`cache_read_input_tokens`、`input_tokens_details.cached_tokens/cache_write_tokens` 等字段；全 0 返回 null 不覆盖真实 usage。
+  - 接入点：fallback.js 的 forwardWithFallback/forwardChat 和各 relay 函数（`relayUpstream*`/`pipeSseWithNormalization` 增加 onUsage 回调，流式 `response.completed` 里提取 usage）；server.js 的 messages/chat 路由也 record。
+  - `GET /v1/usage?days=&model=&provider=` 聚合：总请求/成功率/各类 token/缓存命中率/平均延迟 + perModel/perProvider/perDay。
+  - 配置 `usageLog.enabled/file`，`usage/` 已 gitignore。
+  - 坑：server.js 调 forwardWithFallback 时最初漏传 `tracker`（只传了 breaker），日志全变成 502/无记录；已修并加 server 集成测试。
+- 测试：154 个全过（新增 routes 通配、config patterns 归一化、usageLog 单测、/v1/usage 集成）。

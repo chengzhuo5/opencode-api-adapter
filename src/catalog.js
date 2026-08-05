@@ -1,11 +1,11 @@
 import { writeFileSync } from 'node:fs';
-import { listRoutedModels } from './routes.js';
+import { listRoutedModels, getModelEntry } from './routes.js';
 
 export function buildCatalog(config, template, modelMeta) {
   const models = listRoutedModels(config)
     .map((id, index) => {
-      // 上下文窗口优先级：模型级 config.contextWindow > modelMeta.contextWindow > 模板默认
-      const contextWindow = config.models?.[id]?.contextWindow ?? modelMeta[id]?.contextWindow;
+      // 上下文窗口优先级：模型生效配置（精确条目或通配符）> modelMeta.contextWindow > 模板默认
+      const contextWindow = getModelEntry(config, id)?.contextWindow ?? modelMeta[id]?.contextWindow;
       return {
         ...template,
         context_window: contextWindow ?? template.context_window,

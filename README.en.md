@@ -12,6 +12,8 @@
 - Cross-protocol history normalization preserves tool calls (including legacy `custom_tool_call`/`custom_tool_call_output` items) and reasoning, removes internal fields, repairs duplicated historical tool names, and re-pairs interrupted or interleaved tool rounds so every `tool_calls` message is answered before the next role. Stored item ids are dropped on replay because legacy `resp_..._msg` prefixed ids are rejected by some upstreams.
 - Passive circuit breaker: providers are skipped after consecutive failures or a sustained error rate, a half-open probe is allowed after the cooldown, and the provider recovers after enough probe successes. Complements the active health probes.
 - Per-model context windows: the catalog declares `context_window` per model (353K for the ergou GPT family, template default 1M otherwise) so Codex compacts before the upstream limit is hit.
+- Wildcard model config: `modelPatterns` applies one provider block to many models (`gpt-*`); exact `models` entries always win.
+- Request log and usage stats: every request appends one JSONL line (model/provider/status/tokens/cache/latency), and `GET /v1/usage` returns totals plus per-model/provider/day breakdowns.
 - Structured console logs report multimodal and API fallback events without logging API keys, full prompts, or image data.
 - Usable as a CLI or imported as a Node HTTP server.
 
@@ -69,14 +71,14 @@ Minimal configuration:
 }
 ```
 
-### Custom providers (per-model endpoints)
+### Custom providers (per-model endpoints and wildcards)
 
-By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be overridden to another provider, and that provider has **higher priority than OpenCode** — on failure the router falls back to OpenCode, then to chat/completions:
+By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be overridden to another provider, and that provider has **higher priority than OpenCode** — on failure the router falls back to OpenCode, then to chat/completions. When several models share a provider, `modelPatterns` covers them with a glob (`*` matches any run, `?` matches one character):
 
 ```json
 {
-  "models": {
-    "gpt-5.6-luna": {
+  "modelPatterns": {
+    "gpt-*": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
       "apiKeyEnv": "ERGOUAPI_API_KEY",
@@ -87,6 +89,7 @@ By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be
 }
 ```
 
+- Priority: exact `models` entry > `modelPatterns` match (longest pattern wins) > default route.
 - `endpoint`: base URL of the custom provider (the router appends `/responses` or `/messages`)
 - `apiKeyEnv`: environment variable holding the provider API key; falls back to the global `apiKeyEnv` when omitted
 - `maxHistoryMessages`: optional, keep only the latest N messages before forwarding (for providers with small context windows, e.g. ergou luna); no truncation by default
@@ -137,6 +140,29 @@ The two layers complement each other:
 
 - `healthCheck` sends a streaming probe every `intervalMs`; failed providers are moved to the end of the queue and restored automatically when they recover (`provider_health` log events).
 - `circuitBreaker` is driven by real request outcomes, tracked per `model::endpoint`. A provider is tripped after `failureThreshold` consecutive failures, or once at least `minRequests` requests have an error rate above `errorRateThreshold`; after `timeoutMs` one half-open probe is allowed, and `successThreshold` consecutive probe successes close the breaker. State changes emit `provider_circuit` log events.
+
+### Request log and usage stats
+
+```json
+{
+  "usageLog": {
+    "enabled": true,
+    "file": "usage/requests.jsonl"
+  }
+}
+```
+
+Each `/v1/responses` request appends one JSON line to the log file: timestamp, model, provider used, HTTP status, success, input/output/cache-read/cache-write tokens, latency, streaming flag, and error. Tokens come from the upstream `usage` object (Responses and Chat field variants are both understood); 0 when the upstream omits it.
+
+Query the stats:
+
+```text
+GET /v1/usage?days=7
+GET /v1/usage?days=7&model=gpt-5.6-luna
+GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
+```
+
+Returns total requests, success rate, token totals, cache hit rate, average latency, and per-model/provider/day breakdowns. The `usage/` directory is gitignored.
 
 ## Context compression (lean-ctx)
 

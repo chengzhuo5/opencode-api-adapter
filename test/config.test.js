@@ -63,3 +63,34 @@ test('resolves per-endpoint api keys from endpoint objects', () => {
   assert.equal(cfg.apiBaseUrl[0].apiKey, 'gk-b');
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('normalizes modelPatterns api keys and endpoints', () => {
+  const { dir, file } = makeConfig({
+    modelPatterns: {
+      'gpt-*': {
+        upstream: 'responses',
+        endpoint: [
+          { url: 'https://ergou1/v1', apiKeyEnv: 'ERGO1_KEY' },
+          'https://ergou2/v1'
+        ],
+        apiKeyEnv: 'ERGOUAPI_API_KEY'
+      }
+    }
+  });
+  const cfg = loadConfig({
+    configPath: file,
+    env: { OPENCODE_GO_API_KEY: 'gk', ERGOUAPI_API_KEY: 'ek', ERGO1_KEY: 'ek-1' }
+  });
+  assert.equal(cfg.modelPatterns['gpt-*'].apiKey, 'ek');
+  assert.equal(cfg.modelPatterns['gpt-*'].endpoint[0].apiKey, 'ek-1');
+  assert.equal(cfg.modelPatterns['gpt-*'].endpoint[1], 'https://ergou2/v1');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('loads usageLog defaults and merges overrides', () => {
+  const { dir, file } = makeConfig({ usageLog: { file: 'x/y.jsonl' } });
+  const cfg = loadConfig({ configPath: file, env: { OPENCODE_GO_API_KEY: 'k' } });
+  assert.equal(cfg.usageLog.enabled, false);
+  assert.equal(cfg.usageLog.file, 'x/y.jsonl');
+  rmSync(dir, { recursive: true, force: true });
+});

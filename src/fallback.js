@@ -5,6 +5,7 @@ import { normalizeResponsesRequest } from './translate/responsesContext.js';
 import { parseSseEvent, sseEncode } from './sse.js';
 import { replayResponsesAsSse } from './translate/responsesReplay.js';
 import { logEvent } from './logger.js';
+import { extractUsage } from './usageLog.js';
 
 const unsupportedResponses = new Set();
 const unsupportedNotified = new Set();
@@ -229,6 +230,7 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
       upstream = await fetchImpl(provider.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
     } catch {
       breaker?.recordFailure(breakerKey, permit.usedHalfOpenPermit);
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'network_error' });
       logEvent(config, {
         event: 'api_fallback',
         model: displayModel,
@@ -245,13 +247,14 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
     }
     if (upstream.ok) {
       let relayOk = true;
+      let lastUsage = null;
       try {
         if (options.replay) {
-          relayOk = await relayNonStreamingResponse(res, upstream, displayModel);
+          relayOk = await relayNonStreamingResponse(res, upstream, displayModel, (u) => { lastUsage = u; });
         } else if (options.streamRetryFallback ?? true) {
-          relayOk = await relayUpstreamSmart(res, upstream, body, config, fetchImpl, displayModel, provider);
+          relayOk = await relayUpstreamSmart(res, upstream, body, config, fetchImpl, displayModel, provider, (u) => { lastUsage = u; });
         } else {
-          relayOk = await relayUpstream(res, upstream);
+          relayOk = await relayUpstream(res, upstream, (u) => { lastUsage = u; });
         }
       } catch (error) {
         relayOk = false;
@@ -265,9 +268,17 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
       }
       if (relayOk) breaker?.recordSuccess(breakerKey, permit.usedHalfOpenPermit);
       else breaker?.recordFailure(breakerKey, permit.usedHalfOpenPermit);
+      options.tracker?.record({
+        endpoint: provider.endpoint,
+        ok: relayOk,
+        status: 200,
+        usage: lastUsage,
+        error: relayOk ? undefined : 'stream_interrupted'
+      });
       return;
     }
     breaker?.recordFailure(breakerKey, permit.usedHalfOpenPermit);
+    options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: upstream.status, error: 'http_error' });
     if (lastProvider && UNSUPPORTED_STATUSES.has(upstream.status)) {
       unsupportedResponses.add(body.model);
     }
@@ -296,6 +307,7 @@ async function forwardChat(res, body, config, fetchImpl, displayModel, options =
   try {
     upstream = await fetchImpl(endpoint, { method: 'POST', headers, body: JSON.stringify(chatBody), signal });
   } catch (error) {
+    options.tracker?.record({ endpoint, ok: false, status: 502, error: 'network_error' });
     logEvent(config, {
       event: 'api_fallback_result',
       model: displayModel,
@@ -309,6 +321,7 @@ async function forwardChat(res, body, config, fetchImpl, displayModel, options =
     return;
   }
   if (!upstream.ok) {
+    options.tracker?.record({ endpoint, ok: false, status: upstream.status, error: 'http_error' });
     logEvent(config, {
       event: 'api_fallback_result',
       model: displayModel,
@@ -330,19 +343,30 @@ async function forwardChat(res, body, config, fetchImpl, displayModel, options =
     fallback_url: endpoint
   });
   if (body.stream) {
+    let usage = null;
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => res.write(sseEncode(event, data)));
+    await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => {
+      if (event === 'response.completed' && data?.response) {
+        const u = extractUsage(data.response);
+        if (u) usage = u;
+      }
+      res.write(sseEncode(event, data));
+    });
     res.end();
+    options.tracker?.record({ endpoint, ok: true, status: upstream.status, usage });
     return;
   }
   const chat = await upstream.json();
+  const usage = extractUsage(chat);
   if (options.replay) {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
     replayResponsesAsSse(chatToResponsesObject(chat, displayModel), (event, data) => res.write(sseEncode(event, data)));
     res.end();
+    options.tracker?.record({ endpoint, ok: true, status: upstream.status, usage });
     return;
   }
   sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
+  options.tracker?.record({ endpoint, ok: true, status: upstream.status, usage });
 }
 
 const RESPONSE_STATUS_FOR_EVENT = {
@@ -389,12 +413,14 @@ async function parseNonStreamingResponse(upstream, displayModel) {
   }, 'failed');
 }
 
-async function relayNonStreamingResponse(res, upstream, displayModel) {
+async function relayNonStreamingResponse(res, upstream, displayModel, onUsage) {
   const response = await parseNonStreamingResponse(upstream, displayModel);
   if (!response) {
     sendJson(res, 502, { error: { message: 'upstream returned non-JSON response' } });
     return false;
   }
+  const usage = extractUsage(response);
+  if (usage) onUsage?.(usage);
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   replayResponsesAsSse(response, (event, data) => res.write(sseEncode(event, data)));
   res.end();
@@ -416,10 +442,10 @@ async function relayNonStreamingResponse(res, upstream, displayModel) {
  *   后取消流式，改发 stream:false 重试；拿到完整 JSON 后补全字段并回放
  *   为 SSE；重试也失败则补发字段完整的 response.failed。
  */
-export async function relayUpstreamSmart(res, upstream, body, config, fetchImpl, displayModel, provider) {
+export async function relayUpstreamSmart(res, upstream, body, config, fetchImpl, displayModel, provider, onUsage) {
   const contentType = upstream.headers.get('content-type') || 'application/json';
   if (!contentType.includes('text/event-stream')) {
-    return relayUpstream(res, upstream);
+    return relayUpstream(res, upstream, onUsage);
   }
   res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
   const reader = upstream.body.getReader();
@@ -455,9 +481,9 @@ export async function relayUpstreamSmart(res, upstream, body, config, fetchImpl,
   stopKeepAlive(keepAlive);
   if (firstSeenAt === null) {
     try { reader.cancel?.(); } catch { /* noop */ }
-    return retryNonStreamingReplay(res, body, config, fetchImpl, displayModel, provider, buffer);
+    return retryNonStreamingReplay(res, body, config, fetchImpl, displayModel, provider, buffer, onUsage);
   }
-  const ok = await pipeSseWithNormalization(upstream.body, res, { reader, decoder, buffer });
+  const ok = await pipeSseWithNormalization(upstream.body, res, { reader, decoder, buffer }, onUsage);
   try { res.end(); } catch { /* noop */ }
   return ok;
 }
@@ -472,7 +498,7 @@ function stopKeepAlive(handle) {
   if (handle) clearInterval(handle);
 }
 
-async function retryNonStreamingReplay(res, body, config, fetchImpl, displayModel, provider, staleBuffer = '') {
+async function retryNonStreamingReplay(res, body, config, fetchImpl, displayModel, provider, staleBuffer = '', onUsage) {
   logEvent(config, {
     event: 'stream_retry_nonstreaming',
     model: displayModel,
@@ -491,6 +517,8 @@ async function retryNonStreamingReplay(res, body, config, fetchImpl, displayMode
     });
     if (retry.ok) {
       const response = await parseNonStreamingResponse(retry, displayModel);
+      const usage = extractUsage(response);
+      if (usage) onUsage?.(usage);
       replayResponsesAsSse(response, (event, data) => res.write(sseEncode(event, data)));
       res.end();
       return true;
@@ -515,7 +543,7 @@ function writeFailedEvent(res, code, message) {
   } catch { /* noop */ }
 }
 
-export async function relayUpstream(res, upstream) {
+export async function relayUpstream(res, upstream, onUsage) {
   if (!upstream.ok) {
     await relayError(res, upstream);
     return false;
@@ -523,13 +551,15 @@ export async function relayUpstream(res, upstream) {
   const contentType = upstream.headers.get('content-type') || 'application/json';
   res.writeHead(upstream.status, { 'content-type': contentType });
   if (contentType.includes('text/event-stream')) {
-    await pipeSseWithNormalization(upstream.body, res);
+    await pipeSseWithNormalization(upstream.body, res, null, onUsage);
   } else {
     const text = await upstream.text();
     let out = text;
     try {
       const parsed = JSON.parse(text);
       if (parsed && typeof parsed === 'object' && (parsed.object === 'response' || (parsed.id && parsed.model))) {
+        const usage = extractUsage(parsed);
+        if (usage) onUsage?.(usage);
         out = JSON.stringify(normalizeResponsesObject(parsed, 'completed'));
       }
     } catch {
@@ -541,7 +571,7 @@ export async function relayUpstream(res, upstream) {
   return true;
 }
 
-async function pipeSseWithNormalization(body, res, initial = null) {
+async function pipeSseWithNormalization(body, res, initial = null, onUsage) {
   const reader = initial?.reader ?? body?.getReader();
   if (!reader) return false;
   const decoder = initial?.decoder ?? new TextDecoder();
@@ -561,6 +591,8 @@ async function pipeSseWithNormalization(body, res, initial = null) {
       const obj = JSON.parse(parsed.data);
       if (obj && typeof obj === 'object' && obj.response) {
         obj.response = normalizeResponsesObject(obj.response, RESPONSE_STATUS_FOR_EVENT[parsed.event] || 'completed');
+        const usage = extractUsage(obj.response);
+        if (usage) onUsage?.(usage);
         res.write(sseEncode(parsed.event, obj));
         if (parsed.event === 'response.completed') {
           terminalSeen = true;

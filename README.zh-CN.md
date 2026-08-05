@@ -12,6 +12,8 @@
 - 跨协议上下文规范化：工具调用（含旧会话中的 `custom_tool_call`/`custom_tool_call_output`）、`reasoning_content`、旧的重复工具名和历史内部字段都会被清理或转换；对中断或错位的工具轮次自动修复，保证上游要求的 tool_calls ↔ tool 消息配对；重放时丢弃不兼容的历史条目 id（旧会话的 `resp_..._msg` 前缀会被部分上游拒绝）。
 - 被动熔断器：真实请求连续失败或错误率超阈值后自动跳过该 provider，熔断期结束后放行半开探测，成功达到阈值自动恢复；与主动健康探测互补。
 - 模型级上下文窗口：catalog 按模型声明 `context_window`（ergou 的 GPT 系列为 353K，其余沿用模板 1M），Codex 据此提前压缩，避免上游上下文超限。
+- 通配符模型配置：`modelPatterns` 用 `gpt-*` 这类模式统一管理一批模型，精确模型条目优先于通配符。
+- 请求日志与用量统计：每次请求追加 JSONL（模型/provider/状态/token/缓存/延迟），`GET /v1/usage` 返回汇总、按模型/provider/天分组的统计。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
 - 支持作为 CLI 启动，也可以导入 `createRouter` 构建自己的 Node HTTP 服务。
 
@@ -69,14 +71,14 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 }
 ```
 
-### 自定义服务商（模型级端点）
+### 自定义服务商（模型级端点与通配符）
 
-默认所有模型都路由到 `apiBaseUrl`（OpenCode Go）。任何模型都可以覆盖为其他服务商，且该服务商**优先级高于 OpenCode**——失败时自动降级到 OpenCode，再降级到 chat/completions：
+默认所有模型都路由到 `apiBaseUrl`（OpenCode Go）。任何模型都可以覆盖为其他服务商，且该服务商**优先级高于 OpenCode**——失败时自动降级到 OpenCode，再降级到 chat/completions。多个模型使用同一服务商时用 `modelPatterns` 通配（`*` 匹配任意串，`?` 匹配单字符）：
 
 ```json
 {
-  "models": {
-    "gpt-5.6-luna": {
+  "modelPatterns": {
+    "gpt-*": {
       "upstream": "responses",
       "endpoint": "https://ergouapi.com/v1",
       "apiKeyEnv": "ERGOUAPI_API_KEY",
@@ -87,6 +89,7 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 }
 ```
 
+- 优先级：精确 `models` 条目 > `modelPatterns` 通配（多个通配命中时取更长的模式）> 默认路由。
 - `endpoint`：自定义服务商的 base URL（路由会自动拼接 `/responses` 或 `/messages`）
 - `apiKeyEnv`：该服务商 API key 对应的环境变量名；不设置则复用全局 `apiKeyEnv`
 - `maxHistoryMessages`：可选，转发前只保留最近 N 条消息（自定义服务商上下文窗口较小时使用，如 ergou 的 luna）；默认不截断
@@ -137,6 +140,29 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 - `healthCheck`：每 `intervalMs` 主动发一次流式探针，探测失败的 provider 被排到末尾，恢复后自动切回（日志事件 `provider_health`）。
 - `circuitBreaker`：由真实请求成败驱动，按 `model::endpoint` 独立统计。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
+
+### 请求日志与用量统计
+
+```json
+{
+  "usageLog": {
+    "enabled": true,
+    "file": "usage/requests.jsonl"
+  }
+}
+```
+
+启用后，每次 `/v1/responses` 请求会追加一行 JSON 到日志文件：时间、模型、实际使用的 provider、HTTP 状态、成功与否、输入/输出/缓存读/缓存写 token、总延迟、是否流式、错误信息。token 从上游响应的 `usage`（兼容 Responses 与 Chat 两种字段格式）提取；上游不返回 usage 时记为 0。
+
+查询统计：
+
+```text
+GET /v1/usage?days=7
+GET /v1/usage?days=7&model=gpt-5.6-luna
+GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
+```
+
+返回总请求数、成功率、各类 token 总量、缓存命中率、平均延迟，以及按模型/provider/天的分组统计。`usage/` 目录已加入 `.gitignore`。
 
 ## 上下文压缩（lean-ctx）
 

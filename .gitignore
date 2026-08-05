@@ -10,6 +10,7 @@ scripts/start-router-hidden.vbs
 work/
 ctx-store/
 logs/
+usage/
 adapter.log
 adapter.err.log
 .tokensave/

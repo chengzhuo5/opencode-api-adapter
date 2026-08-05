@@ -23,6 +23,10 @@ export const DEFAULT_CONFIG = {
     errorRateThreshold: 0.6,
     minRequests: 5
   },
+  usageLog: {
+    enabled: false,
+    file: 'usage/requests.jsonl'
+  },
   compress: {
     enabled: true,
     backend: 'lean-ctx',
@@ -44,9 +48,11 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     ...raw,
     timeouts: { ...DEFAULT_CONFIG.timeouts, ...(raw.timeouts || {}) },
     models: raw.models || {},
+    modelPatterns: raw.modelPatterns || {},
     compress: { ...DEFAULT_CONFIG.compress, ...(raw.compress || {}) },
     healthCheck: { ...DEFAULT_CONFIG.healthCheck, ...(raw.healthCheck || {}) },
-    circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...(raw.circuitBreaker || {}) }
+    circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...(raw.circuitBreaker || {}) },
+    usageLog: { ...DEFAULT_CONFIG.usageLog, ...(raw.usageLog || {}) }
   };
   const apiKey = env[config.apiKeyEnv];
   if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);
@@ -69,5 +75,14 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
       models[id] = entry;
     }
   }
-  return { ...config, apiKey, models, apiBaseUrl: normalizeEndpoint(config.apiBaseUrl, apiKey) };
+  const modelPatterns = {};
+  for (const [pattern, entry] of Object.entries(config.modelPatterns || {})) {
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+      const entryKey = entry.apiKeyEnv ? env[entry.apiKeyEnv] : apiKey;
+      modelPatterns[pattern] = { ...entry, apiKey: entryKey, endpoint: normalizeEndpoint(entry.endpoint, entryKey) };
+    } else {
+      modelPatterns[pattern] = entry;
+    }
+  }
+  return { ...config, apiKey, models, modelPatterns, apiBaseUrl: normalizeEndpoint(config.apiBaseUrl, apiKey) };
 }

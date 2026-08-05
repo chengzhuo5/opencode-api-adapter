@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRoute, UnknownModelError, listRoutedModels } from '../src/routes.js';
+import { resolveRoute, UnknownModelError, listRoutedModels, matchModelPattern, getModelEntry } from '../src/routes.js';
 
 const config = { apiBaseUrl: 'https://opencode.ai/zen/go/v1', models: {} };
 
@@ -51,6 +51,58 @@ test('gpt models route to ergou with custom endpoint and key', () => {
   assert.equal(r1.apiKey, 'ergou-key');
   const r2 = resolveRoute(cfg, 'gpt-5.6-terra');
   assert.equal(r2.endpoint, 'https://ergouapi.com/v1/responses');
+});
+
+test('modelPatterns wildcard routes all gpt models to ergou', () => {
+  const cfg = {
+    apiBaseUrl: 'https://opencode.ai/zen/go/v1',
+    apiKey: 'opencode-key',
+    modelPatterns: {
+      'gpt-*': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key', maxHistoryMessages: 10, contextWindow: 353000 }
+    }
+  };
+  for (const id of ['gpt-5.4-mini', 'gpt-5.4', 'gpt-5.5', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol']) {
+    const route = resolveRoute(cfg, id);
+    assert.equal(route.upstream, 'responses');
+    assert.equal(route.endpoint, 'https://ergouapi.com/v1/responses');
+    assert.equal(route.apiKey, 'ergou-key');
+    assert.equal(route.entry.maxHistoryMessages, 10);
+    assert.equal(route.entry.contextWindow, 353000);
+    assert.equal(route.fallbackEndpoint, 'https://opencode.ai/zen/go/v1/responses');
+  }
+});
+
+test('exact model config beats wildcard pattern', () => {
+  const cfg = {
+    apiBaseUrl: 'https://opencode.ai/zen/go/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'responses', endpoint: 'https://exact.test/v1', apiKey: 'exact-key' } },
+    modelPatterns: { 'gpt-*': { upstream: 'responses', endpoint: 'https://ergouapi.com/v1', apiKey: 'ergou-key' } }
+  };
+  const route = resolveRoute(cfg, 'gpt-5.6-luna');
+  assert.equal(route.endpoint, 'https://exact.test/v1/responses');
+  assert.equal(route.apiKey, 'exact-key');
+});
+
+test('most specific pattern wins', () => {
+  const cfg = {
+    apiBaseUrl: 'https://opencode.ai/zen/go/v1',
+    modelPatterns: {
+      'gpt-*': { endpoint: 'https://generic.test/v1', apiKey: 'gk' },
+      'gpt-5.6-*': { endpoint: 'https://specific.test/v1', apiKey: 'sk' }
+    }
+  };
+  const generic = resolveRoute(cfg, 'gpt-5.4');
+  const specific = resolveRoute(cfg, 'gpt-5.6-luna');
+  assert.equal(generic.endpoint, 'https://generic.test/v1/responses');
+  assert.equal(specific.endpoint, 'https://specific.test/v1/responses');
+  assert.equal(matchModelPattern(cfg, 'gpt-5.6-luna'), 'gpt-5.6-*');
+});
+
+test('getModelEntry returns exact, pattern, or empty', () => {
+  const cfg = { models: { x: { a: 1 } }, modelPatterns: { 'gpt-*': { b: 2 } } };
+  assert.equal(getModelEntry(cfg, 'x').a, 1);
+  assert.equal(getModelEntry(cfg, 'gpt-5.6-luna').b, 2);
+  assert.deepEqual(getModelEntry(cfg, 'nope'), {});
 });
 
 test('routes minimax to messages', () => {
