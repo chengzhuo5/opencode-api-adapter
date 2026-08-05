@@ -14,6 +14,7 @@
 - 模型级上下文窗口：catalog 按模型声明 `context_window`（ergou 的 GPT 系列为 353K，其余沿用模板 1M），Codex 据此提前压缩，避免上游上下文超限。
 - 通配符模型配置：`modelPatterns` 用 `gpt-*` 这类模式统一管理一批模型，精确模型条目优先于通配符。
 - 请求日志与用量统计：每次请求追加 JSONL（模型/provider/状态/token/缓存/延迟），`GET /v1/usage` 返回汇总、按模型/provider/天分组的统计。
+- 内置管理页面与桌面 App：浏览器访问 `http://127.0.0.1:15722/admin` 或运行 ewvjs 打包的桌面壳，支持查看状态、编辑配置、用量统计与热重启。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
 - 支持作为 CLI 启动，也可以导入 `createRouter` 构建自己的 Node HTTP 服务。
 
@@ -163,6 +164,27 @@ GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
 ```
 
 返回总请求数、成功率、各类 token 总量、缓存命中率、平均延迟，以及按模型/provider/天的分组统计。`usage/` 目录已加入 `.gitignore`。
+
+### 管理页面与桌面 App
+
+路由内置一个零依赖的浅色主题管理页面（`admin/`），浏览器打开 `http://127.0.0.1:15722/admin` 即可使用：
+
+- **总览**：服务状态、PID/运行时长、Provider 健康（主动探测）、熔断器状态（真实请求驱动）；
+- **用量**：请求数/成功率/Token/缓存命中率/平均延迟，按天柱状图与按模型/Provider 明细；
+- **配置**：直接编辑 `config.json`，支持「保存并热加载」（校验后写文件，进程内重启 HTTP 服务，Codex 无需重连）与「重启服务」。
+
+管理 API：`GET /api/status`、`GET /api/config`、`POST /api/reload`（body 为配置原文）、`POST /api/restart`。
+
+桌面壳在 `desktop/`（ewvjs = Node + Windows 自带 WebView2）：
+
+```powershell
+cd desktop
+npm install
+npm start              # 源码模式：直接用仓库 config.json，端口被占用时只开窗口
+npm run package        # 打包：dist/CodexRouter.exe + assets/（便携目录）
+```
+
+打包后的 exe 首次运行会把资源种子到 `%LOCALAPPDATA%\CodexRouter`（config/admin/catalog/usage/logs 都在该目录），路由在 App 进程内运行，关闭窗口即停止；若 15722 已被占用（如 watchdog 在跑）则只打开窗口接管，不重复启动。
 
 ## 上下文压缩（lean-ctx）
 

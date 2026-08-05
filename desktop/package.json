@@ -1,0 +1,19 @@
+{
+  "name": "codex-router-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ewvjs (WebView2) desktop shell for the opencode-api-adapter router",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "prep": "node scripts/prep-assets.mjs",
+    "package": "npm run prep && ewvjs-cli package app.js --output CodexRouter --name \"Codex Router\" --target node22-win-x64 --assets assets"
+  },
+  "dependencies": {
+    "ewvjs": "^1.0.25"
+  },
+  "devDependencies": {
+    "ewvjs-cli": "^1.0.24"
+  }
+}

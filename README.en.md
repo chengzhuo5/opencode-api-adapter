@@ -14,6 +14,7 @@
 - Per-model context windows: the catalog declares `context_window` per model (353K for the ergou GPT family, template default 1M otherwise) so Codex compacts before the upstream limit is hit.
 - Wildcard model config: `modelPatterns` applies one provider block to many models (`gpt-*`); exact `models` entries always win.
 - Request log and usage stats: every request appends one JSONL line (model/provider/status/tokens/cache/latency), and `GET /v1/usage` returns totals plus per-model/provider/day breakdowns.
+- Built-in admin UI and desktop app: open `http://127.0.0.1:15722/admin` in a browser, or run the ewvjs-packaged desktop shell, to view status, edit config, inspect usage, and hot-restart the router.
 - Structured console logs report multimodal and API fallback events without logging API keys, full prompts, or image data.
 - Usable as a CLI or imported as a Node HTTP server.
 
@@ -163,6 +164,27 @@ GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
 ```
 
 Returns total requests, success rate, token totals, cache hit rate, average latency, and per-model/provider/day breakdowns. The `usage/` directory is gitignored.
+
+### Admin UI and desktop app
+
+The router ships a zero-dependency light-themed admin page under `admin/`; open `http://127.0.0.1:15722/admin` in a browser to use it:
+
+- **Overview**: service status, PID/uptime, provider health (active probes), circuit breaker state (real-request driven);
+- **Usage**: requests/success rate/tokens/cache hit rate/avg latency, a per-day bar chart, and per-model/provider breakdowns;
+- **Config**: edit `config.json` directly, with "save and hot-reload" (validate, write file, restart the HTTP server in-process — Codex keeps working) and "restart service".
+
+Admin APIs: `GET /api/status`, `GET /api/config`, `POST /api/reload` (raw config as body), `POST /api/restart`.
+
+The desktop shell lives in `desktop/` (ewvjs = Node + the Windows built-in WebView2):
+
+```powershell
+cd desktop
+npm install
+npm start              # source mode: uses the repo config.json; only opens a window if the port is already taken
+npm run package        # package: dist/CodexRouter.exe + assets/ (portable folder)
+```
+
+On first run the packaged exe seeds `%LOCALAPPDATA%\CodexRouter` (config/admin/catalog/usage/logs all live there) and runs the router inside the app process; closing the window stops it. If port 15722 is already in use (e.g. the watchdog is running), it attaches to the running router instead of starting another.
 
 ## Context compression (lean-ctx)
 

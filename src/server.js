@@ -1,5 +1,6 @@
 import http from 'node:http';
 import path from 'node:path';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolveRoute, UnknownModelError } from './routes.js';
 import { sseEncode } from './sse.js';
 import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js';
@@ -15,7 +16,25 @@ import { createHealthMonitor } from './health.js';
 import { createCircuitBreaker } from './circuitBreaker.js';
 import { createUsageLogger, createRequestTracker, readUsageLines, aggregateUsage, extractUsage } from './usageLog.js';
 
-export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
+const ADMIN_MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.json': 'application/json; charset=utf-8',
+  '.png': 'image/png',
+  '.ico': 'image/x-icon'
+};
+
+export function createRouter(config, {
+  fetchImpl = globalThis.fetch,
+  adminDir,
+  version,
+  getConfigText,
+  onReloadValidate,
+  onReloadCommit,
+  onRestartCommit
+} = {}) {
   const compressEnabled = config?.compress?.enabled && config.compress.backend === 'lean-ctx';
   const ctxCache = compressEnabled ? new Map() : null;
   const ctxSafety = compressEnabled ? new Map() : null;
@@ -32,7 +51,7 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
       })
     : null;
   const usageLogger = config?.usageLog?.enabled ? createUsageLogger(config) : null;
-  return http.createServer(async (req, res) => {
+  const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
       if (req.method === 'GET' && url.pathname === '/healthz') {
@@ -71,6 +90,59 @@ export function createRouter(config, { fetchImpl = globalThis.fetch } = {}) {
         sendJson(res, 200, stats);
         return;
       }
+      if (req.method === 'GET' && (url.pathname === '/admin' || url.pathname.startsWith('/admin/'))) {
+        serveAdmin(res, url.pathname, adminDir);
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/status') {
+        sendJson(res, 200, {
+          ok: true,
+          pid: process.pid,
+          uptimeSec: Math.floor(process.uptime()),
+          host: config.host,
+          port: config.port,
+          version: version || '0.0.0',
+          config: {
+            models: Object.keys(config.models || {}).length,
+            modelPatterns: Object.keys(config.modelPatterns || {}),
+            healthCheck: config.healthCheck,
+            circuitBreaker: config.circuitBreaker,
+            usageLog: config.usageLog,
+            compress: config.compress ? { enabled: config.compress.enabled, backend: config.compress.backend } : null,
+            nonStreamingUpstream: Boolean(config.nonStreamingUpstream)
+          },
+          health: health ? health.status() : [],
+          circuit: breaker ? breaker.statuses() : [],
+          usage: usageLogger
+            ? aggregateUsage(readUsageLines(usageLogger.file), { days: 7 })
+            : { enabled: false }
+        });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/config') {
+        sendJson(res, 200, { ok: true, config: getConfigText ? getConfigText() : '' });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/reload') {
+        const text = await readRawBody(req);
+        const error = onReloadValidate ? onReloadValidate(text) : 'reload not configured';
+        if (error) {
+          sendJson(res, 400, { ok: false, error });
+          return;
+        }
+        sendJson(res, 200, { ok: true, message: '配置已保存，正在热加载' });
+        setImmediate(() => {
+          onReloadCommit?.().catch((e) => logEvent(config, { event: 'admin_reload_failed', reason: String(e?.message || e).slice(0, 300) }));
+        });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/restart') {
+        sendJson(res, 200, { ok: true, message: '正在重启路由服务' });
+        setImmediate(() => {
+          onRestartCommit?.().catch((e) => logEvent(config, { event: 'admin_restart_failed', reason: String(e?.message || e).slice(0, 300) }));
+        });
+        return;
+      }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const body = await readJson(req);
         const route = resolveRoute(config, maybeUpgradeModel(body).model);
@@ -100,6 +172,25 @@ if (error instanceof UnknownModelError) sendJson(res, 400, { error: { message: e
       else sendJson(res, 500, { error: { message: error.message || 'internal error' } });
     }
   });
+  server.__routerCleanup = () => { health?.stop(); };
+  return server;
+}
+
+function serveAdmin(res, urlPath, adminDir) {
+  if (!adminDir) {
+    sendJson(res, 404, { error: { message: 'admin ui not configured' } });
+    return;
+  }
+  let rel = urlPath === '/admin' ? '/index.html' : urlPath.slice('/admin'.length);
+  const normalized = path.normalize(rel).replace(/^([/\\])+/, '');
+  const file = path.resolve(adminDir, normalized);
+  if (!file.startsWith(adminDir + path.sep) || !existsSync(file) || !statSync(file).isFile()) {
+    sendJson(res, 404, { error: { message: `not found: ${urlPath}` } });
+    return;
+  }
+  const ext = path.extname(file).toLowerCase();
+  res.writeHead(200, { 'content-type': ADMIN_MIME[ext] || 'application/octet-stream' });
+  res.end(readFileSync(file));
 }
 
 function reorderProvidersByHealth(route, health) {
@@ -258,4 +349,10 @@ async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+async function readRawBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf8');
 }

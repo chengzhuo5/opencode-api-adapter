@@ -108,3 +108,21 @@
   - 配置 `usageLog.enabled/file`，`usage/` 已 gitignore。
   - 坑：server.js 调 forwardWithFallback 时最初漏传 `tracker`（只传了 breaker），日志全变成 502/无记录；已修并加 server 集成测试。
 - 测试：154 个全过（新增 routes 通配、config patterns 归一化、usageLog 单测、/v1/usage 集成）。
+
+## 2026-08-05：管理页面 + ewvjs 桌面 App
+
+- **管理 API + admin 页面**（路由内置，零依赖）：
+  - `GET /api/status`（pid/uptime/config 摘要/health.status()/circuit.statuses()/7 天用量汇总）、`GET /api/config`（返回 config.json 原文）、`POST /api/reload`（body 为配置原文，先校验后写文件，再进程内热重启）、`POST /api/restart`。
+  - admin 静态页：`admin/index.html` + `style.css` + `app.js`，浅色主题，总览/用量/配置三视图；`server.js` 的 `serveAdmin` 做路径穿越防护；管理 API 不暴露任何 API key（key 本来就在环境变量里）。
+  - **热重启**：`main.js` 重构为 `startRouter()`（CLI 与桌面壳共用），进程内 stop 旧 server → 重建 catalog/config → listen 新 server；旧 server 的 health 定时器通过 `__routerCleanup` 停止。重启窗口极小，watchdog 若抢拉起重复实例会 bind 失败自行退出。
+- **ewvjs 桌面壳**（`desktop/`，Node + WebView2）：
+  - 源码模式 `npm start`：直接 `startRouter` 用仓库 config.json，15722 已被 watchdog 占用时只开窗口。
+  - 打包模式 `npm run package`（`ewvjs-cli package --target node22-win-x64 --assets assets`）：`dist/CodexRouter.exe` + `dist/assets/`（admin、catalog-template、config.example）。首次运行种子到 `%LOCALAPPDATA%\CodexRouter`（config/catalog/admin/usage/ctx-store 全在该目录），路由在 App 进程内，关窗即停。
+  - 已验证：打包 exe 内嵌路由成功启动、healthz 200、`/admin` 200、`POST /api/restart` 热重启后同 PID 健康（pkg 里 pid 不变，uptime 是进程级不重置）、窗口标题 "Codex Router 控制台" 正常。
+- **坑与注意**：
+  - `create_window` 是 async 的（返回 Promise<Window>），必须 `await`；文档示例没写会踩 `win.run is not a function`。
+  - pkg 默认 target node18-win-x64 的基础镜像 404，必须显式 `--target node22-win-x64`。
+  - main.js 不能有顶层 await + export 组合（pkg ESM 转换警告），CLI 启动改用 IIFE；桌面壳 import startRouter 无副作用。
+  - PowerShell 5.1 的 `Start-Process` 没有 `-Environment` 参数（PS7 才有）；测试脚本用 `$env:LOCALAPPDATA` 继承。
+  - 打包/测试脚本：`desktop/scripts/prep-assets.mjs`（同步资源）、`desktop/scripts/test-packaged.ps1`（临时 LOCALAPPDATA 跑 exe 看 stdout/stderr + healthz）。`desktop/dist`、`desktop/assets` 已 gitignore。
+- 测试：159 个全过（新增 admin 静态页、路径穿越、api/status、api/reload 校验/提交、api/restart）。

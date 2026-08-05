@@ -119,6 +119,12 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
     isUnhealthy: (model, endpoint) => unhealthy.has(keyOf(model, endpoint)),
     probe,
     probeAll,
+    status: () => [...watched.entries()].map(([key, target]) => ({
+      key,
+      model: target.model,
+      endpoint: target.endpoint,
+      unhealthy: unhealthy.has(key)
+    })),
     start,
     stop,
     watchedCount: () => watched.size

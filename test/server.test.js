@@ -7,8 +7,8 @@ import path from 'node:path';
 import { createRouter } from '../src/server.js';
 import { normalizeResponsesRequest } from '../src/translate/responsesContext.js';
 
-async function withServer(config, fetchImpl, fn) {
-  const server = createRouter(config, { fetchImpl });
+async function withServer(config, fetchImpl, fn, options = {}) {
+  const server = createRouter(config, { fetchImpl, ...options });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   try {
@@ -85,6 +85,87 @@ test('usage endpoint reports logged request', async () => {
     assert.equal(stats.perModel['gpt-5.6-luna'].requests, 1);
   });
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('admin page is served from adminDir', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'admin-http-'));
+  writeFileSync(path.join(dir, 'index.html'), '<h1>admin</h1>');
+  await withServer({
+    apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {}
+  }, async () => {}, async (base) => {
+    const res = await fetch(base + '/admin');
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type'), /text\/html/);
+    assert.match(await res.text(), /<h1>admin<\/h1>/);
+  }, { adminDir: dir });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('admin path traversal is blocked', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'admin-http2-'));
+  writeFileSync(path.join(dir, 'index.html'), 'ok');
+  writeFileSync(path.join(path.dirname(dir), 'secret.txt'), 'secret');
+  await withServer({
+    apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {}
+  }, async () => {}, async (base) => {
+    const res = await fetch(base + '/admin/%2e%2e/secret.txt');
+    assert.equal(res.status, 404, 'traversal must not escape adminDir');
+  }, { adminDir: dir });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('api/status exposes health and circuit state', async () => {
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    healthCheck: { enabled: true, intervalMs: 60000, timeoutMs: 5000 },
+    circuitBreaker: { enabled: true }
+  }, async () => new Response('event: response.completed\ndata: {"type":"response.completed"}\n\n', { status: 200, headers: { 'content-type': 'text/event-stream' } }), async (base) => {
+    const res = await fetch(base + '/api/status');
+    const data = await res.json();
+    assert.equal(res.status, 200);
+    assert.equal(typeof data.pid, 'number');
+    assert.ok(Array.isArray(data.health));
+    assert.ok(Array.isArray(data.circuit));
+  });
+});
+
+test('api/reload validates, saves, and schedules commit', async () => {
+  let committed = false;
+  let validated = '';
+  const cfg = {
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {}
+  };
+  await withServer(cfg, async () => {}, async (base) => {
+    const bad = await fetch(base + '/api/reload', { method: 'POST', body: '{bad json' });
+    assert.equal(bad.status, 400);
+    assert.equal(committed, false, 'invalid config must not commit');
+
+    const ok = await fetch(base + '/api/reload', { method: 'POST', body: '{"port":12345}' });
+    assert.equal(ok.status, 200);
+    assert.equal(validated, '{"port":12345}');
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(committed, true, 'valid config schedules commit');
+  }, {
+    onReloadValidate: (text) => {
+      validated = text;
+      try { JSON.parse(text); return null; } catch (error) { return error.message; }
+    },
+    onReloadCommit: async () => { committed = true; }
+  });
+});
+
+test('api/restart schedules commit', async () => {
+  let committed = false;
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {} }, async () => {}, async (base) => {
+    const res = await fetch(base + '/api/restart', { method: 'POST' });
+    assert.equal(res.status, 200);
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(committed, true);
+  }, { onRestartCommit: async () => { committed = true; } });
 });
 
 test('ctx endpoint 400s bad hashes and 404s unknown or disabled compression', async () => {

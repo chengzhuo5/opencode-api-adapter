@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Codex Router 控制台</title>
+  <link rel="stylesheet" href="/admin/style.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">CR</div>
+        <div class="brand-text"><strong>Codex Router</strong><span>本地路由控制台</span></div>
+      </div>
+      <nav class="nav">
+        <a href="#overview" class="nav-item active" data-view="overview">
+          <span class="nav-icon">◫</span>总览
+        </a>
+        <a href="#usage" class="nav-item" data-view="usage">
+          <span class="nav-icon">▤</span>用量统计
+        </a>
+        <a href="#config" class="nav-item" data-view="config">
+          <span class="nav-icon">⚙</span>配置
+        </a>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="status-dot" id="connDot"></span>
+        <span id="connText">连接中…</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">总览</h1>
+          <p class="subtitle" id="serverMeta">—</p>
+        </div>
+        <div class="topbar-actions">
+          <span class="pill" id="versionPill">v—</span>
+          <button class="btn ghost" id="btnRefresh" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section class="view active" id="view-overview">
+        <div class="cards" id="overviewCards"></div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Provider 健康状态</h2>
+            <span class="hint">主动探测每 5 分钟一次</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>模型</th><th>Endpoint</th><th>健康</th></tr></thead>
+              <tbody id="healthTable"><tr><td colspan="3" class="empty">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>熔断器状态</h2>
+            <span class="hint">真实请求成败驱动</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Provider</th><th>状态</th><th>连续失败</th><th>请求 / 失败</th></tr></thead>
+              <tbody id="circuitTable"><tr><td colspan="4" class="empty">加载中…</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-usage">
+        <div class="toolbar">
+          <label class="field">时间范围
+            <select id="usageDays">
+              <option value="1">今日</option>
+              <option value="7" selected>最近 7 天</option>
+              <option value="30">最近 30 天</option>
+              <option value="0">全部</option>
+            </select>
+          </label>
+          <span class="hint" id="usageUpdated"></span>
+        </div>
+        <div class="cards" id="usageCards"></div>
+        <div class="panel">
+          <div class="panel-head"><h2>每日请求数</h2></div>
+          <div id="usageChart" class="chart"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>按模型</h2></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>模型</th><th>请求</th><th>成功率</th><th>输入</th><th>输出</th><th>缓存读</th><th>缓存写</th><th>平均延迟</th></tr></thead>
+              <tbody id="modelTable"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>按 Provider</h2></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Endpoint</th><th>请求</th><th>成功率</th><th>Token 总量</th><th>平均延迟</th></tr></thead>
+              <tbody id="providerTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" id="view-config">
+        <div class="panel config-panel">
+          <div class="panel-head config-head">
+            <div>
+              <h2>config.json</h2>
+              <span class="hint">保存后进程内热加载，无需重启 Codex</span>
+            </div>
+            <div class="btn-group">
+              <button class="btn ghost" id="btnRevert" type="button">重置</button>
+              <button class="btn primary" id="btnSave" type="button">保存并热加载</button>
+              <button class="btn danger" id="btnRestart" type="button">重启服务</button>
+            </div>
+          </div>
+          <textarea id="configEditor" spellcheck="false" aria-label="config.json"></textarea>
+          <p class="hint">API key 不写入此文件（通过环境变量注入）；修改 host/port 等参数在热加载后立即生效。</p>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div id="toasts" class="toasts"></div>
+  <script src="/admin/app.js"></script>
+</body>
+</html>
