@@ -311,6 +311,11 @@ smoke 200/200、pack dry-run 38 个文件且包含 `src/requestLifecycle.js`；�
 `[DEBUG-*]` 已清除。生命周期只控制 I/O，不读取或改写 Router Request，因此不影响
 DeepSeek 前缀、tools 顺序、cache usage 与 Provider Affinity。
 
+**部署验证**：commit `8dbfc37` 已推送并重启 `CodexRouter`，Node PID
+`51716 → 61096`，压缩与 circuit breaker 仍关闭。真实 DeepSeek 流在客户端收到首批
+2,010 bytes 后主动断开，usage 最终为 `status=499 / ok=false /
+error=client_disconnected`；随后完整 DeepSeek 非流请求 200 completed，PID 保持不变。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。
