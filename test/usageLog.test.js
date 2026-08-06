@@ -357,6 +357,9 @@ test('aggregateUsage computes totals, rates and breakdowns', () => {
   assert.equal(stats.totalCacheMissTokens, 80);
   assert.equal(stats.totalCacheWriteTokens, 30);
   assert.equal(stats.cacheHitRate, 20 / 100);
+  assert.equal(stats.cacheHitCoverageRate, 1 / 3);
+  assert.equal(stats.cacheRatioHitTokens, 20);
+  assert.equal(stats.cacheRatioMissTokens, 80);
   assert.equal(stats.estimatedCostUsd, 0.001);
   assert.equal(stats.estimatedUncachedCostUsd, 0.002);
   assert.equal(stats.estimatedCacheSavingsUsd, 0.001);
@@ -398,6 +401,9 @@ test('aggregateUsage excludes legacy unknown cache zeros from hit-rate math', ()
     }
   ]);
   assert.equal(stats.cacheHitRate, 0.5);
+  assert.equal(stats.cacheHitCoverageRate, 0.5);
+  assert.equal(stats.cacheRatioHitTokens, 5);
+  assert.equal(stats.cacheRatioMissTokens, 5);
   assert.equal(stats.totalCacheHitTokens, 5);
   assert.equal(stats.totalCacheMissTokens, 5);
 });

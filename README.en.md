@@ -195,7 +195,7 @@ GET /v1/usage?days=7&model=gpt-5.6-luna
 GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
 ```
 
-Returns request/success totals, token totals, `hit / (hit + miss)` cache ratio, cost coverage and estimates, compression-checkpoint reuse, average latency, and per-model/provider/day breakdowns. The `usage/` directory is gitignored.
+Returns request/success totals, token totals, the `hit / (hit + miss)` cache ratio plus complete-sample coverage, cost coverage and estimates, compression-checkpoint reuse, average latency, and per-model/provider/day breakdowns. Legacy records with hit but no miss never treat the unknown miss as zero; the admin UI shows ratio and coverage together to prevent misreading. The `usage/` directory is gitignored.
 
 ### Admin UI and desktop app
 

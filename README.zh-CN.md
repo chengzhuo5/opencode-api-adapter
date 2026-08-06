@@ -196,7 +196,7 @@ GET /v1/usage?days=7&model=gpt-5.6-luna
 GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
 ```
 
-返回总请求数、成功率、各类 token 总量、`hit / (hit + miss)` 命中率、费用覆盖率/估算费用、压缩 checkpoint 复用率、平均延迟，以及按模型/provider/天的分组统计。`usage/` 目录已加入 `.gitignore`。
+返回总请求数、成功率、各类 token 总量、`hit / (hit + miss)` 命中率及其完整样本覆盖率、费用覆盖率/估算费用、压缩 checkpoint 复用率、平均延迟，以及按模型/provider/天的分组统计。旧日志只有 hit、没有 miss 时不会把未知 miss 当成 0；管理页会同时显示命中率和覆盖率，避免误读。`usage/` 目录已加入 `.gitignore`。
 
 ### 管理页面与桌面 App
 

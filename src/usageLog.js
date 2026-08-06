@@ -522,6 +522,7 @@ function emptyBucket() {
     cache_write_tokens: 0,
     cache_ratio_hit_tokens: 0,
     cache_ratio_miss_tokens: 0,
+    cache_ratio_requests: 0,
     known: {
       input_tokens: false,
       output_tokens: false,
@@ -568,6 +569,7 @@ function addBucket(bucket, entry) {
   if (cacheHit !== null && cacheMiss !== null) {
     bucket.cache_ratio_hit_tokens += cacheHit;
     bucket.cache_ratio_miss_tokens += cacheMiss;
+    bucket.cache_ratio_requests += 1;
   }
   addKnownToken(
     bucket,
@@ -622,6 +624,9 @@ function finalizeBucket(bucket) {
     cache_creation_tokens: bucket.known.cache_write_tokens ? bucket.cache_write_tokens : null,
     total_tokens: totalTokens,
     cacheHitRate,
+    cacheHitCoverageRate: bucket.requests ? bucket.cache_ratio_requests / bucket.requests : 0,
+    cacheRatioHitTokens: bucket.cache_ratio_requests ? bucket.cache_ratio_hit_tokens : null,
+    cacheRatioMissTokens: bucket.cache_ratio_requests ? bucket.cache_ratio_miss_tokens : null,
     estimatedCostUsd:
       bucket.cost_known_requests > 0 ? roundUsd(bucket.estimated_cost_usd) : null,
     estimatedUncachedCostUsd:
@@ -698,6 +703,9 @@ export function aggregateUsage(entries, filters = {}) {
     totalCacheCreationTokens: finalizedTotal.cache_creation_tokens,
     totalTokens: finalizedTotal.total_tokens,
     cacheHitRate: finalizedTotal.cacheHitRate,
+    cacheHitCoverageRate: finalizedTotal.cacheHitCoverageRate,
+    cacheRatioHitTokens: finalizedTotal.cacheRatioHitTokens,
+    cacheRatioMissTokens: finalizedTotal.cacheRatioMissTokens,
     estimatedCostUsd: finalizedTotal.estimatedCostUsd,
     estimatedUncachedCostUsd: finalizedTotal.estimatedUncachedCostUsd,
     estimatedCacheSavingsUsd: finalizedTotal.estimatedCacheSavingsUsd,

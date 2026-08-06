@@ -94,6 +94,10 @@ import { createPollGate } from './polling.js';
     return (x * 100).toFixed(1) + '%';
   }
 
+  function fmtRateCoverage(rate, coverage) {
+    return `${fmtPct(rate)} / ${fmtPct(coverage)}`;
+  }
+
   function fmtMs(ms) {
     if (ms === null || ms === undefined) return '—';
     if (ms < 1000) return ms + ' ms';
@@ -140,7 +144,7 @@ import { createPollGate } from './polling.js';
       { label: '服务状态', value: s ? '运行中' : '—', sub: s ? `PID ${s.pid} · 已运行 ${fmtUptime(s.uptimeSec)}` : '' },
       { label: '近 7 天请求', value: fmtInt(usage.totalRequests), sub: `成功率 ${fmtPct(usage.successRate)}` },
       { label: 'Token 总量', value: fmtInt(usage.totalTokens), sub: `输入 ${fmtInt(usage.totalInputTokens)} · 输出 ${fmtInt(usage.totalOutputTokens)}` },
-      { label: '缓存命中率', value: fmtPct(usage.cacheHitRate), sub: `Hit ${fmtKnownInt(usage.totalCacheHitTokens)} · Miss ${fmtKnownInt(usage.totalCacheMissTokens)}` },
+      { label: '缓存命中率', value: fmtPct(usage.cacheHitRate), sub: `完整样本覆盖 ${fmtPct(usage.cacheHitCoverageRate)} · Hit ${fmtKnownInt(usage.totalCacheHitTokens)} · Miss ${fmtKnownInt(usage.totalCacheMissTokens)}` },
       { label: '估算费用', value: fmtUsd(usage.estimatedCostUsd), sub: `费用覆盖 ${fmtPct(usage.costCoverageRate)}` },
       { label: '平均延迟', value: fmtMs(usage.avgLatencyMs), sub: '近 7 天' }
     ];
@@ -181,7 +185,7 @@ import { createPollGate } from './polling.js';
       { label: '请求数', value: fmtInt(u.totalRequests), sub: `成功率 ${fmtPct(u.successRate)}` },
       { label: '输入 Token', value: fmtInt(u.totalInputTokens), sub: `Hit ${fmtKnownInt(u.totalCacheHitTokens)} · Miss ${fmtKnownInt(u.totalCacheMissTokens)}` },
       { label: '输出 Token', value: fmtInt(u.totalOutputTokens), sub: `缓存写 ${fmtKnownInt(u.totalCacheWriteTokens)}` },
-      { label: '缓存命中率', value: fmtPct(u.cacheHitRate), sub: 'Hit / (Hit + Miss)' },
+      { label: '缓存命中率', value: fmtPct(u.cacheHitRate), sub: `完整样本覆盖 ${fmtPct(u.cacheHitCoverageRate)} · Hit / (Hit + Miss)` },
       { label: '估算费用', value: fmtUsd(u.estimatedCostUsd), sub: `缓存节省 ${fmtUsd(u.estimatedCacheSavingsUsd)} · 覆盖 ${fmtPct(u.costCoverageRate)}` },
       { label: '压缩 Checkpoint', value: fmtPct(compression.checkpointReuseRate), sub: `${fmtInt(compression.requests)} 次 · 前缀变化 ${fmtPct(compression.prefixChangedRate)}` },
       { label: '平均延迟', value: fmtMs(u.avgLatencyMs), sub: `${state.days === 0 ? '全部' : '近 ' + state.days + ' 天'}` }
@@ -203,7 +207,7 @@ import { createPollGate } from './polling.js';
           <td>${fmtInt(m.output_tokens)}</td>
           <td>${fmtKnownInt(m.cache_hit_tokens)}</td>
           <td>${fmtKnownInt(m.cache_miss_tokens)}</td>
-          <td>${fmtPct(m.cacheHitRate)}</td>
+          <td>${fmtRateCoverage(m.cacheHitRate, m.cacheHitCoverageRate)}</td>
           <td>${fmtUsd(m.estimatedCostUsd)}</td>
           <td>${fmtMs(m.avgLatencyMs)}</td>
         </tr>
@@ -220,7 +224,7 @@ import { createPollGate } from './polling.js';
           <td>${fmtInt(p.total_tokens)}</td>
           <td>${fmtKnownInt(p.cache_hit_tokens)}</td>
           <td>${fmtKnownInt(p.cache_miss_tokens)}</td>
-          <td>${fmtPct(p.cacheHitRate)}</td>
+          <td>${fmtRateCoverage(p.cacheHitRate, p.cacheHitCoverageRate)}</td>
           <td>${fmtUsd(p.estimatedCostUsd)}</td>
           <td>${fmtMs(p.avgLatencyMs)}</td>
         </tr>

@@ -651,3 +651,10 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **SSE 解析修复**：Responses 探针不再用正则扫描整段 payload；仅解析真实 `event:` 名称。模型文本中出现字面量 `response.failed` 不会抢先误判，最终 `response.completed` / `response.incomplete` 才决定成功。
 - **验证**：新增 pattern Provider 探针与“文本包含终止词”回归，health 定向测试 **11/11** 通过。
 - **缓存约束**：探针仍使用固定最小请求，不注入会话、时间、随机字段，不改变 DeepSeek 模型可见前缀或正式请求路由。
+
+## 2026-08-06：缓存命中率完整样本覆盖率（本阶段）
+
+- **浏览器复现**：管理页同时显示 `Cache Hit 289.95M`、`Cache Miss 925` 与 `命中率 0.0%`。旧 JSONL 大量记录只有 `cache_read_tokens`、没有 miss；命中率严格只计算 hit/miss 同时存在的 10 个新样本，但 UI 没有暴露覆盖率，视觉上自相矛盾。
+- **修复**：Usage Store 新增 `cacheHitCoverageRate`、`cacheRatioHitTokens`、`cacheRatioMissTokens`；完整样本算法保持不变，不把未知 miss 当 0。管理页总览、用量卡片、按模型/Provider 表格同时展示“命中率 / 覆盖”。
+- **验证**：usage 定向测试 **15/15**；现有旧日志经最新聚合可明确区分 total hit/miss 与完整样本覆盖。
+- **浏览器 QA**：本机管理页导航、用量图表、表格语义和资源加载正常，无应用控制台错误；当前服务仍是旧 API，因此新 coverage 字段需重启服务后显示。
