@@ -96,6 +96,7 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 - `apiKeyEnv`：该服务商 API key 对应的环境变量名；不设置则复用全局 `apiKeyEnv`。显式声明但环境变量缺失时启动立即失败，不会静默发送空 key
 - `maxHistoryMessages`：可选，转发前只保留最近 N 条消息（自定义服务商上下文窗口较小时使用，如 ergou 的 luna）；默认不截断
 - `contextWindow`：可选，覆盖该模型在 catalog 中声明的上下文窗口（Codex 用它决定何时压缩）。ergou 的 GPT 系列实际窗口为 353K，已内置为默认值
+- `pricing`：可选，按百万 Token 配置 `cachedInputUsdPerMillion`、`uncachedInputUsdPerMillion`、`outputUsdPerMillion`。只有上游返回明确 hit/miss 且三项价格齐全时才估算费用；未知值保持 `null`
 - 优先级：自定义服务商（存在时独占）→ `apiBaseUrl`（仅未配置自定义端点的模型）→ 协议降级（chat/completions，仅当 `apiBaseUrl` 存在时可用；`apiBaseUrl` 可设为 `null` 彻底关闭全局兜底）
 - “模型不支持”记忆：仅当上游明确返回模型不存在/不支持（如 `Model x is not supported`）时才按 `model::provider` 短暂记忆（5 分钟 TTL）；鉴权失败（401）、5xx、网络错误等瞬时故障不会污染路由，同一模型的其他 provider 也不受影响
 
@@ -119,10 +120,15 @@ opencode-api-adapter
 opencode-api-adapter --config "C:\path\to\config.json"
 ```
 
-### 健康检查与熔断器
+### Provider 粘性、健康检查与熔断器
 
 ```json
 {
+  "providerStickiness": {
+    "enabled": true,
+    "ttlMs": 21600000,
+    "maxEntries": 10000
+  },
   "healthCheck": {
     "enabled": true,
     "intervalMs": 300000,
@@ -139,9 +145,10 @@ opencode-api-adapter --config "C:\path\to\config.json"
 }
 ```
 
-两层机制互补：
+三层机制互补：
 
-- `healthCheck`：每 `intervalMs` 并行发送与上游协议匹配的探针（Responses/Chat/Messages 使用各自路径、请求体和鉴权头）；探测失败的 provider 被排到末尾，恢复后自动切回（日志事件 `provider_health`）。
+- `providerStickiness`：默认开启。同一 session/model 使用本地 HMAC 亲和键持续命中同一 Provider；明确 failover 成功后更新绑定并保留 `ttlMs`。健康恢复只影响新会话，不会把进行中的长会话自动切回。路由不会向模型请求体注入 session、时间或随机字段。
+- `healthCheck`：每 `intervalMs` 并行发送与上游协议匹配的探针（Responses/Chat/Messages 使用各自路径、请求体和鉴权头）；探测失败的 provider 被排到新会话候选末尾（日志事件 `provider_health`）。
 - `circuitBreaker`：默认关闭（`enabled: false`），需要时开启。由真实请求成败驱动，按 `model::endpoint` 独立统计。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
 
 ### 请求日志与用量统计
@@ -155,7 +162,9 @@ opencode-api-adapter --config "C:\path\to\config.json"
 }
 ```
 
-启用后，每次 `/v1/responses` 请求会追加一行 JSON 到日志文件：时间、模型、实际使用的 provider、HTTP 状态、成功与否、输入/输出/缓存读/缓存写 token、总延迟、是否流式、错误信息。token 从上游响应的 `usage`（兼容 Responses 与 Chat 两种字段格式）提取；上游不返回 usage 时记为 0。
+启用后，每次 `/v1/responses` 请求会追加一行 JSON 到日志文件：时间、模型、实际使用的 provider、HTTP 状态、成功与否、输入/输出/cache hit/cache miss/cache write token、费用估算、总延迟、是否流式、错误信息。兼容 DeepSeek 原生 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`、OpenAI cached token details 与 Anthropic cache read/write 字段；上游未返回的维度记为 `null`，不会把“未知”统计成 0。旧的 `cache_read_tokens` / `cache_creation_tokens` 继续作为兼容别名。
+
+日志还包含本地 HMAC 生成的 `conversation_key_hash`、`model_visible_prefix_hash`、`tool_schema_hash`、`provider_endpoint_hash` 以及 route/translator 版本，用于定位发布后的缓存命中变化；不会记录完整 Prompt、API key、图片或原始工具输出。
 
 查询统计：
 
@@ -165,14 +174,14 @@ GET /v1/usage?days=7&model=gpt-5.6-luna
 GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
 ```
 
-返回总请求数、成功率、各类 token 总量、缓存命中率、平均延迟，以及按模型/provider/天的分组统计。`usage/` 目录已加入 `.gitignore`。
+返回总请求数、成功率、各类 token 总量、`hit / (hit + miss)` 命中率、费用覆盖率/估算费用、压缩 checkpoint 复用率、平均延迟，以及按模型/provider/天的分组统计。`usage/` 目录已加入 `.gitignore`。
 
 ### 管理页面与桌面 App
 
 路由内置一个零依赖的浅色主题管理页面（`admin/`），浏览器打开 `http://127.0.0.1:15722/admin` 即可使用：
 
 - **总览**：服务状态、PID/运行时长、Provider 健康（主动探测）、熔断器状态（真实请求驱动）；
-- **用量**：请求数/成功率/Token/缓存命中率/平均延迟，按天柱状图与按模型/Provider 明细；
+- **用量**：请求数/成功率/Token/cache hit+miss/费用覆盖/checkpoint 复用/平均延迟，按天柱状图与按模型/Provider 明细；
 - **配置**：直接编辑 `config.json`，支持「保存并热加载」（校验后写文件，进程内重启 HTTP 服务，Codex 无需重连）与「重启服务」。
 
 管理 API：`GET /api/status`、`GET /api/config`、`POST /api/reload`（body 为配置原文）、`POST /api/restart`。
@@ -262,13 +271,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Code\AI\opencode-api-adap
     "token": "",
     "storeDir": "ctx-store",
     "cacheSize": 1000,
+    "minOutputTokens": 2048,
     "timeoutMs": 30000
   }
 }
 ```
 
-- 压缩粒度：每个 `function_call_output` 独立压缩（无论大小）；其余 input 项原样透传。
-- 缓存安全：同一输出指纹对应同一压缩结果，历史前缀字节稳定，DeepSeek 前缀缓存可命中；每次请求输出 `cache_safety_check` 校验前缀漂移。
+- 压缩粒度：只有达到固定 `minOutputTokens` 阈值的 `function_call_output` 才独立压缩；阈值之间保持历史 append-only，其余 input 项原样透传。
+- 缓存安全：同一输出指纹对应一个磁盘持久化 checkpoint；服务重启或内存缓存淘汰后仍复用相同压缩文本，不会每轮重写旧前缀。每次请求输出 `cache_safety_check`，并按会话校验前缀漂移。
 - CCR 显式取回：被压缩项的输出格式为 `<压缩文本> [[ctx:<sha256>|<绝对路径>]]`，其中 `<绝对路径>` 是原文 JSON 存档（SHA-256 内容寻址，位于 `storeDir`）。需要完整原文时，用 shell 读取该文件即可：
 
 ```powershell
@@ -279,7 +289,7 @@ Get-Content -Raw "<绝对路径>"
 cat "<绝对路径>"
 ```
 
-- 日志：`context_compression` 汇总事件记录整体压缩率；缓存命中不再逐条打日志。`compress.logLevel` 可设 `"verbose"`（默认，含 `cache_safety_check`）或 `"quiet"`（只保留汇总与错误日志）；daemon 不可用时自动降级为不压缩，不影响路由功能。
+- 日志：`context_compression` 汇总事件记录 checkpoint、`tokens_before/after` 与压缩率；最终 usage 日志在模型配置了 `pricing` 时，用真实 cache hit/miss/output 计算费用与缓存节省，不用 `tokens_saved` 代替费用判断。`compress.logLevel` 可设 `"verbose"`（默认，含 `cache_safety_check`）或 `"quiet"`（只保留汇总与错误日志）；daemon 不可用时自动降级为不压缩，不影响路由功能。
 
 
 ## 启动

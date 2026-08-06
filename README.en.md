@@ -96,6 +96,7 @@ By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be
 - `apiKeyEnv`: environment variable holding the provider API key; falls back to the global `apiKeyEnv` when omitted. If explicitly configured but missing, startup fails immediately instead of sending an empty key.
 - `maxHistoryMessages`: optional, keep only the latest N messages before forwarding (for providers with small context windows, e.g. ergou luna); no truncation by default
 - `contextWindow`: optional, overrides the catalog `context_window` for this model (Codex uses it to decide when to compact). The ergou GPT family defaults to 353K.
+- `pricing`: optional per-million-token prices: `cachedInputUsdPerMillion`, `uncachedInputUsdPerMillion`, and `outputUsdPerMillion`. Cost is estimated only when explicit hit/miss usage and all three prices are available; unknown values remain `null`.
 - Priority: custom provider (exclusive when configured) → `apiBaseUrl` (only for models without a custom endpoint) → protocol fallback (chat/completions, only when `apiBaseUrl` exists; set `apiBaseUrl` to `null` to disable the global fallback entirely)
 
 Both `endpoint` and the global `apiBaseUrl` accept a **string or an array**. Responses, Chat Completions, and Anthropic Messages routes all try providers in order with an independent timeout per attempt; the first successful response wins. Each element can be a string (uses the model/global default key) or an object `{ "url": "...", "apiKeyEnv": "..." }` to assign a dedicated key to that endpoint:
@@ -118,10 +119,15 @@ opencode-api-adapter
 opencode-api-adapter --config "C:\path\to\config.json"
 ```
 
-### Health checks and circuit breaker
+### Provider stickiness, health checks, and circuit breaker
 
 ```json
 {
+  "providerStickiness": {
+    "enabled": true,
+    "ttlMs": 21600000,
+    "maxEntries": 10000
+  },
   "healthCheck": {
     "enabled": true,
     "intervalMs": 300000,
@@ -138,9 +144,10 @@ opencode-api-adapter --config "C:\path\to\config.json"
 }
 ```
 
-The two layers complement each other:
+The layers complement each other:
 
-- `healthCheck` sends protocol-correct probes in parallel every `intervalMs` (Responses/Chat/Messages use their own path, request body, and authentication headers); failed providers are moved to the end of the queue and restored automatically when they recover (`provider_health` log events).
+- `providerStickiness` is enabled by default. A local HMAC affinity key keeps the same session/model on one Provider; a successful failover updates the binding for `ttlMs`. Provider recovery affects new sessions and does not switch an active long conversation back mid-session. No session, timestamp, or random field is injected into the model request.
+- `healthCheck` sends protocol-correct probes in parallel every `intervalMs` (Responses/Chat/Messages use their own path, request body, and authentication headers); failed providers move to the end of the candidate order for new sessions (`provider_health` events).
 - `circuitBreaker` is disabled by default (`enabled: false`); turn it on when needed. It is driven by real request outcomes, tracked per `model::endpoint`. A provider is tripped after `failureThreshold` consecutive failures, or once at least `minRequests` requests have an error rate above `errorRateThreshold`; after `timeoutMs` one half-open probe is allowed, and `successThreshold` consecutive probe successes close the breaker. State changes emit `provider_circuit` log events.
 
 ### Request log and usage stats
@@ -154,7 +161,9 @@ The two layers complement each other:
 }
 ```
 
-Each `/v1/responses` request appends one JSON line to the log file: timestamp, model, provider used, HTTP status, success, input/output/cache-read/cache-write tokens, latency, streaming flag, and error. Tokens come from the upstream `usage` object (Responses and Chat field variants are both understood); 0 when the upstream omits it.
+Each `/v1/responses` request appends one JSON line containing timestamp, model, provider, status, success, input/output/cache-hit/cache-miss/cache-write tokens, estimated cost, latency, streaming flag, and error. DeepSeek `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`, OpenAI cached-token details, and Anthropic cache read/write fields are supported. Missing dimensions remain `null` instead of being counted as zero; legacy `cache_read_tokens` / `cache_creation_tokens` remain as aliases.
+
+The log also contains local-HMAC `conversation_key_hash`, `model_visible_prefix_hash`, `tool_schema_hash`, and `provider_endpoint_hash` values plus route/translator versions. It never stores full prompts, API keys, images, or raw tool output.
 
 Query the stats:
 
@@ -164,14 +173,14 @@ GET /v1/usage?days=7&model=gpt-5.6-luna
 GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
 ```
 
-Returns total requests, success rate, token totals, cache hit rate, average latency, and per-model/provider/day breakdowns. The `usage/` directory is gitignored.
+Returns request/success totals, token totals, `hit / (hit + miss)` cache ratio, cost coverage and estimates, compression-checkpoint reuse, average latency, and per-model/provider/day breakdowns. The `usage/` directory is gitignored.
 
 ### Admin UI and desktop app
 
 The router ships a zero-dependency light-themed admin page under `admin/`; open `http://127.0.0.1:15722/admin` in a browser to use it:
 
 - **Overview**: service status, PID/uptime, provider health (active probes), circuit breaker state (real-request driven);
-- **Usage**: requests/success rate/tokens/cache hit rate/avg latency, a per-day bar chart, and per-model/provider breakdowns;
+- **Usage**: requests/success rate/tokens/cache hit+miss/cost coverage/checkpoint reuse/avg latency, a per-day bar chart, and per-model/provider breakdowns;
 - **Config**: edit `config.json` directly, with "save and hot-reload" (validate, write file, restart the HTTP server in-process — Codex keeps working) and "restart service".
 
 Admin APIs: `GET /api/status`, `GET /api/config`, `POST /api/reload` (raw config as body), `POST /api/restart`.
@@ -256,13 +265,14 @@ The router compresses only `function_call_output` (tool outputs) in history, kee
     "token": "",
     "storeDir": "ctx-store",
     "cacheSize": 1000,
+    "minOutputTokens": 2048,
     "timeoutMs": 30000
   }
 }
 ```
 
-- Granularity: every `function_call_output` is compressed independently (regardless of size); all other input items pass through verbatim.
-- Cache safety: the same output fingerprint always yields the same compressed text, so the historical prefix stays byte-stable and DeepSeek prefix cache hits are preserved; each request emits a `cache_safety_check` for prefix drift.
+- Granularity: only `function_call_output` items at or above the fixed `minOutputTokens` threshold are compressed; history remains append-only between thresholds and all other input items pass through verbatim.
+- Cache safety: each output fingerprint maps to a disk-persisted checkpoint. The exact compressed text is reused after a restart or in-memory eviction instead of regenerating old history; `cache_safety_check` tracks prefix drift per conversation.
 - Explicit CCR retrieval: a compressed item becomes `<compressed text> [[ctx:<sha256>|<absolute path>]]`, where `<absolute path>` points to the original JSON archive (SHA-256 addressed, under `storeDir`). To retrieve the full original, read that file with the shell:
 
 ```powershell
@@ -273,7 +283,7 @@ Get-Content -Raw "<absolute path>"
 cat "<absolute path>"
 ```
 
-- Logs: the `context_compression` summary records overall rates; cached outputs no longer emit per-output logs. Set `compress.logLevel` to `"verbose"` (default, includes `cache_safety_check`) or `"quiet"` (summary and errors only); when the daemon is unavailable, compression degrades gracefully and routing keeps working.
+- Logs: `context_compression` records checkpoint state and `tokens_before/after`. When a route has `pricing`, the final usage record uses actual cache hit/miss/output usage to estimate cost and cache savings instead of treating `tokens_saved` as money. Set `compress.logLevel` to `"verbose"` (default, includes `cache_safety_check`) or `"quiet"` (summary and errors only); when the daemon is unavailable, compression fails open and routing keeps working.
 
 
 ## Starting the adapter

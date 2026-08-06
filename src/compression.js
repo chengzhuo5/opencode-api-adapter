@@ -4,6 +4,7 @@ import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 const DEFAULT_CACHE_SIZE = 1000;
+const CHECKPOINT_VERSION = 1;
 
 /**
  * 显式 CCR 取回方式
@@ -61,6 +62,37 @@ export function storeOutput(output, storeDir) {
   return file;
 }
 
+function checkpointPath(hash, storeDir) {
+  return storeDir ? path.join(storeDir, `${hash}.checkpoint.json`) : null;
+}
+
+export function loadCompressionCheckpoint(hash, storeDir) {
+  if (!storeDir || !/^[a-f0-9]{64}$/.test(String(hash ?? ''))) return null;
+  const file = checkpointPath(hash, storeDir);
+  if (!existsSync(file)) return null;
+  try {
+    const checkpoint = JSON.parse(readFileSync(file, 'utf8'));
+    if (checkpoint?.version !== CHECKPOINT_VERSION || typeof checkpoint.text !== 'string') return null;
+    return checkpoint.text;
+  } catch {
+    return null;
+  }
+}
+
+function storeCompressionCheckpoint(hash, text, storeDir) {
+  if (!storeDir) return null;
+  mkdirSync(storeDir, { recursive: true });
+  const file = checkpointPath(hash, storeDir);
+  if (!existsSync(file)) {
+    writeFileSync(file, JSON.stringify({
+      version: CHECKPOINT_VERSION,
+      checkpoint_id: hash,
+      text
+    }));
+  }
+  return file;
+}
+
 /**
  * HTTP 取回（GET /v1/ctx/<sha256>）：
  * 按存档指纹返回原始 function_call_output JSON；哈希非法或文件不存在时返回 null。
@@ -86,6 +118,10 @@ export async function compressInput(input, ctx) {
       outputs_total: 0,
       outputs_cached: 0,
       outputs_compressed: 0,
+      outputs_skipped: 0,
+      checkpoint_id: null,
+      checkpoint_reused: null,
+      prefix_changed: null,
       saved_pct: 0
     }
   };
@@ -103,17 +139,45 @@ export async function compressInput(input, ctx) {
     const fingerprint = outputFingerprint(item);
     const charsBefore = JSON.stringify(item).length;
     const tokensBefore = estimateTokens(JSON.stringify(item));
+    if (tokensBefore < (ctx.minOutputTokens ?? 0)) {
+      meta.overall.outputs_skipped += 1;
+      out.push(item);
+      continue;
+    }
     let text = ctx.cache.get(fingerprint);
-    let cached = true;
+    let checkpointSource = text === undefined
+      ? null
+      : (typeof text?.then === 'function' ? 'inflight' : 'memory');
+    if (typeof text?.then === 'function') text = await text;
     if (text === undefined) {
-      const result = await compressOutput({ output: item.output, model: ctx.model, client: ctx.client });
-      text = result.text;
-      ctx.cache.set(fingerprint, text);
+      text = loadCompressionCheckpoint(fingerprint, ctx.storeDir);
+      if (text !== null) {
+        ctx.cache.set(fingerprint, text);
+        checkpointSource = 'disk';
+      } else {
+        text = undefined;
+      }
+    }
+    let cached = text !== undefined;
+    if (text === undefined) {
+      const pending = compressOutput({ output: item.output, model: ctx.model, client: ctx.client })
+        .then((result) => {
+          ctx.cache.set(fingerprint, result.text);
+          storeCompressionCheckpoint(fingerprint, result.text, ctx.storeDir);
+          return result.text;
+        })
+        .catch((error) => {
+          if (ctx.cache.get(fingerprint) === pending) ctx.cache.delete(fingerprint);
+          throw error;
+        });
+      ctx.cache.set(fingerprint, pending);
+      text = await pending;
       if (ctx.cache.size > (ctx.cacheSize ?? DEFAULT_CACHE_SIZE)) {
         const first = ctx.cache.keys().next().value;
         ctx.cache.delete(first);
       }
       cached = false;
+      checkpointSource = 'generated';
     }
     const archiveFile = storeOutput(item, ctx.storeDir);
     const marker = archiveFile ? ` [[ctx:${fingerprint}|${archiveFile}]]` : '';
@@ -127,7 +191,19 @@ export async function compressInput(input, ctx) {
     if (cached) meta.overall.outputs_cached += 1;
     else meta.overall.outputs_compressed += 1;
     const textHash = createHash('sha256').update(text).digest('hex');
-    meta.outputs.push({ fingerprint, cached, textHash, savedPct, charsBefore, charsAfter, tokensBefore, tokensAfter });
+    meta.outputs.push({
+      fingerprint,
+      cached,
+      checkpointId: fingerprint,
+      checkpointReused: cached,
+      checkpointSource,
+      textHash,
+      savedPct,
+      charsBefore,
+      charsAfter,
+      tokensBefore,
+      tokensAfter
+    });
     if (!cached) {
       ctx.log?.({
         event: 'context_compression',
@@ -146,16 +222,30 @@ export async function compressInput(input, ctx) {
   }
   meta.overall.outputs_total = meta.outputs.length;
   meta.overall.tokens_saved = meta.overall.tokens_before - meta.overall.tokens_after;
+  if (meta.outputs.length) {
+    meta.overall.checkpoint_id = createHash('sha256')
+      .update(meta.outputs.map((output) => `${output.fingerprint}:${output.textHash}`).join('\n'))
+      .digest('hex');
+    meta.overall.checkpoint_reused = meta.outputs.every((output) => output.checkpointReused);
+  }
   meta.overall.saved_pct = meta.overall.chars_before > 0
     ? Math.round((1 - meta.overall.chars_after / meta.overall.chars_before) * 100)
     : 0;
   return out;
 }
 
-export async function maybeCompressInput(body, config, client, storeDir, cache, safetyMap, stats) {
+export async function maybeCompressInput(body, config, client, storeDir, cache, safetyMap, stats, options = {}) {
   if (!config?.compress?.enabled || config.compress.backend !== 'lean-ctx') return body;
   try {
-    const ctx = { client, model: body.model, storeDir, cache, log: (e) => logEvent(config, e) };
+    const ctx = {
+      client,
+      model: body.model,
+      storeDir,
+      cache,
+      cacheSize: config.compress.cacheSize,
+      minOutputTokens: config.compress.minOutputTokens,
+      log: (e) => logEvent(config, e)
+    };
     const input = await compressInput(body.input, ctx);
     const meta = ctx.meta;
     if (stats) {
@@ -180,7 +270,8 @@ export async function maybeCompressInput(body, config, client, storeDir, cache, 
       reason: 'ok'
     });
     if (safetyMap) {
-      const prev = safetyMap.get(body.model);
+      const safetyKey = `${body.model}::${options.safetyKey || 'unscoped'}`;
+      const prev = safetyMap.get(safetyKey);
       const current = meta.outputs;
       let ok = true;
       let comparable = false;
@@ -195,7 +286,11 @@ export async function maybeCompressInput(body, config, client, storeDir, cache, 
           }
         }
       }
-      safetyMap.set(body.model, { hashes: current.map((t) => t.textHash), fingerprints: current.map((t) => t.fingerprint) });
+      safetyMap.set(safetyKey, {
+        hashes: current.map((t) => t.textHash),
+        fingerprints: current.map((t) => t.fingerprint)
+      });
+      meta.overall.prefix_changed = comparable ? !ok : null;
       if (config.compress.logLevel !== 'quiet') {
         logEvent(config, {
           event: 'cache_safety_check',
@@ -206,6 +301,7 @@ export async function maybeCompressInput(body, config, client, storeDir, cache, 
         });
       }
     }
+    options.onMeta?.(meta.overall);
     return { ...body, input };
   } catch {
     logEvent(config, { event: 'context_compression', model: body.model, reason: 'backend_unavailable' });

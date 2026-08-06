@@ -1035,16 +1035,17 @@ test('vision model direct request keeps images (no strip)', async () => {
 
 test('relayUpstream normalizes streamed responses completed events', async () => {
   const calls = [];
+  let capturedUsage = null;
   const res = { writeHead: (s, h) => calls.push(['head', s]), write: (c) => calls.push(['write', Buffer.isBuffer(c) ? c.toString() : String(c)]), end: () => calls.push(['end']) };
   const upstream = new Response(new ReadableStream({
     start(controller) {
       const enc = new TextEncoder();
-      controller.enqueue(enc.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"r1","model":"deepseek-v4-flash","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}}\n\n'));
+      controller.enqueue(enc.encode('event: response.completed\ndata: {"type":"response.completed","response":{"id":"r1","model":"deepseek-v4-flash","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7,"prompt_cache_hit_tokens":4,"prompt_cache_miss_tokens":1}}}\n\n'));
       controller.enqueue(enc.encode('event: ping\ndata: {} \n\n'));
       controller.close();
     }
   }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
-  await relayUpstream(res, upstream);
+  await relayUpstream(res, upstream, (usage) => { capturedUsage = usage; });
   const written = calls.filter((c) => c[0] === 'write').map((c) => c[1]).join('');
   const completed = written.match(/event: response\.completed\ndata: (\{.*?\})\n\n/s)?.[1];
   assert.ok(completed, 'expected normalized completed event');
@@ -1055,6 +1056,10 @@ test('relayUpstream normalizes streamed responses completed events', async () =>
   assert.equal(obj.response.status, 'completed');
   assert.ok(typeof obj.response.created_at === 'number');
   assert.ok(Array.isArray(obj.response.output));
+  assert.equal(obj.response.usage.prompt_cache_hit_tokens, 4);
+  assert.equal(obj.response.usage.prompt_cache_miss_tokens, 1);
+  assert.equal(capturedUsage.cache_hit_tokens, 4);
+  assert.equal(capturedUsage.cache_miss_tokens, 1);
   // completed 是终止事件：早退不等待 EOF，后续注释/心跳不再转发
   assert.equal(written.includes('event: ping'), false);
 });

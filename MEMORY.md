@@ -144,6 +144,52 @@ request body，Provider attempt 仅重复序列化读取，符合要求。后续
 DeepSeek `prompt_cache_hit_tokens/prompt_cache_miss_tokens` 端到端保真、同会话 Provider
 粘性和确定性 prefix regression。
 
+## 2026-08-06：DeepSeek 缓存安全 P0 验收补齐
+
+**usage 保真与统计语义**：
+
+1. `extractUsage()` 现显式识别 DeepSeek 原生
+   `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，内部统一为
+   `cache_hit_tokens` / `cache_miss_tokens` / `cache_write_tokens`，同时保留旧
+   `cache_read_tokens` / `cache_creation_tokens` 别名。
+2. 上游未返回的 usage 维度保持 `null`，明确返回 0 才记 0；fallback 的空 usage
+   不再覆盖前一次 attempt 的真实 usage。多 attempt 请求只在发生 failover 时附带精简
+   attempt 元数据，不记录请求正文。
+3. 缓存命中率统一为 `hit / (hit + miss)`；`total_tokens` 修复为 input + output，
+   不再把已包含在 input 中的 cache-read token 重复相加。
+4. 模型条目可配置 `pricing.cachedInputUsdPerMillion` /
+   `uncachedInputUsdPerMillion` / `outputUsdPerMillion`。只有价格齐全且 hit/miss/output
+   均明确时才计算 `estimated_cost_usd`、全未缓存基线和缓存节省；未知不按 0 估算。
+
+**Provider 粘性与前缀确定性**：
+
+1. 新增 `providerAffinity.js`：同 session/model 使用本地 HMAC key 做有界 TTL 绑定；
+   首次会话服从健康排序，成功 failover 后更新绑定，Provider 恢复不会把进行中会话
+   自动切回。无显式 session 时，用 instructions + tools + 第一条历史项做 append-stable
+   最佳努力锚点，且剔除随机 item id/status。
+2. Provider Affinity 只重排 route.providers，不修改 Router Request，也不向模型前缀
+   注入时间、随机 ID、健康信息或 session 字段。
+3. 新增三协议确定性回归：同输入 byte-equivalent；追加新消息时旧转换前缀不变；
+   tools 数组顺序保持；异常 tool history 修复结果可重复。
+4. 新增 `cacheDiagnostics.js`：以 API key 派生的本地 HMAC 记录
+   `conversation_key_hash`、`model_visible_prefix_hash`、`tool_schema_hash`、
+   `provider_endpoint_hash`、route/translator 版本；不落完整 Prompt、API key、图片或
+   原始工具输出。
+
+**稳定压缩 checkpoint**：
+
+1. `compress.minOutputTokens` 默认 2048；阈值以下保持原历史 append-only。
+2. 压缩结果按输出指纹持久化为磁盘 checkpoint，服务重启或内存淘汰后仍逐字复用；
+   同指纹并发请求使用 in-flight Promise 合并，只调用一次压缩后端，避免并发生成不同摘要。
+3. prefix drift safety map 改为按会话隔离；usage 日志关联 checkpoint id、是否复用、
+   prefix_changed、tokens_before/after/saved，并在配置 pricing 后用真实 usage 评估费用。
+4. 压缩后端故障仍 fail-open。当前本机 `compress.enabled=false` 是用户明确决定，
+   本轮没有开启。
+
+**管理页与验证**：管理页增加 cache hit/miss、命中率、费用/覆盖率、checkpoint
+复用率与前缀变化率。最终全套 216/216、smoke 200/200、双向四跳 mock 均通过；
+`npm pack --dry-run` 确认新增诊断与亲和 Module 进入发布包。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

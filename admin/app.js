@@ -40,6 +40,17 @@
     return String(n);
   }
 
+  function fmtKnownInt(n) {
+    return n === null || n === undefined ? '—' : fmtInt(n);
+  }
+
+  function fmtUsd(value) {
+    if (value === null || value === undefined) return '—';
+    if (value === 0) return '$0.00';
+    if (value < 0.01) return '$' + Number(value).toFixed(6);
+    return '$' + Number(value).toFixed(2);
+  }
+
   function fmtPct(x) {
     if (x === null || x === undefined) return '—';
     return (x * 100).toFixed(1) + '%';
@@ -91,7 +102,8 @@
       { label: '服务状态', value: s ? '运行中' : '—', sub: s ? `PID ${s.pid} · 已运行 ${fmtUptime(s.uptimeSec)}` : '' },
       { label: '近 7 天请求', value: fmtInt(usage.totalRequests), sub: `成功率 ${fmtPct(usage.successRate)}` },
       { label: 'Token 总量', value: fmtInt(usage.totalTokens), sub: `输入 ${fmtInt(usage.totalInputTokens)} · 输出 ${fmtInt(usage.totalOutputTokens)}` },
-      { label: '缓存命中率', value: fmtPct(usage.cacheHitRate), sub: `读 ${fmtInt(usage.totalCacheReadTokens)} · 写 ${fmtInt(usage.totalCacheCreationTokens)}` },
+      { label: '缓存命中率', value: fmtPct(usage.cacheHitRate), sub: `Hit ${fmtKnownInt(usage.totalCacheHitTokens)} · Miss ${fmtKnownInt(usage.totalCacheMissTokens)}` },
+      { label: '估算费用', value: fmtUsd(usage.estimatedCostUsd), sub: `费用覆盖 ${fmtPct(usage.costCoverageRate)}` },
       { label: '平均延迟', value: fmtMs(usage.avgLatencyMs), sub: '近 7 天' }
     ];
     $('#overviewCards').innerHTML = cards.map((c) => `
@@ -126,11 +138,14 @@
   function renderUsage() {
     const u = state.usage;
     if (!u) return;
+    const compression = u.compression || {};
     const cards = [
       { label: '请求数', value: fmtInt(u.totalRequests), sub: `成功率 ${fmtPct(u.successRate)}` },
-      { label: '输入 Token', value: fmtInt(u.totalInputTokens), sub: `缓存读 ${fmtInt(u.totalCacheReadTokens)}` },
-      { label: '输出 Token', value: fmtInt(u.totalOutputTokens), sub: `缓存写 ${fmtInt(u.totalCacheCreationTokens)}` },
-      { label: '缓存命中率', value: fmtPct(u.cacheHitRate), sub: '可缓存输入中的命中占比' },
+      { label: '输入 Token', value: fmtInt(u.totalInputTokens), sub: `Hit ${fmtKnownInt(u.totalCacheHitTokens)} · Miss ${fmtKnownInt(u.totalCacheMissTokens)}` },
+      { label: '输出 Token', value: fmtInt(u.totalOutputTokens), sub: `缓存写 ${fmtKnownInt(u.totalCacheWriteTokens)}` },
+      { label: '缓存命中率', value: fmtPct(u.cacheHitRate), sub: 'Hit / (Hit + Miss)' },
+      { label: '估算费用', value: fmtUsd(u.estimatedCostUsd), sub: `缓存节省 ${fmtUsd(u.estimatedCacheSavingsUsd)} · 覆盖 ${fmtPct(u.costCoverageRate)}` },
+      { label: '压缩 Checkpoint', value: fmtPct(compression.checkpointReuseRate), sub: `${fmtInt(compression.requests)} 次 · 前缀变化 ${fmtPct(compression.prefixChangedRate)}` },
       { label: '平均延迟', value: fmtMs(u.avgLatencyMs), sub: `${state.days === 0 ? '全部' : '近 ' + state.days + ' 天'}` }
     ];
     $('#usageCards').innerHTML = cards.map((c) => `
@@ -148,12 +163,14 @@
           <td>${fmtPct(m.successRate)}</td>
           <td>${fmtInt(m.input_tokens)}</td>
           <td>${fmtInt(m.output_tokens)}</td>
-          <td>${fmtInt(m.cache_read_tokens)}</td>
-          <td>${fmtInt(m.cache_creation_tokens)}</td>
+          <td>${fmtKnownInt(m.cache_hit_tokens)}</td>
+          <td>${fmtKnownInt(m.cache_miss_tokens)}</td>
+          <td>${fmtPct(m.cacheHitRate)}</td>
+          <td>${fmtUsd(m.estimatedCostUsd)}</td>
           <td>${fmtMs(m.avgLatencyMs)}</td>
         </tr>
       `).join('');
-    $('#modelTable').innerHTML = models || '<tr><td colspan="8" class="empty">暂无请求</td></tr>';
+    $('#modelTable').innerHTML = models || '<tr><td colspan="10" class="empty">暂无请求</td></tr>';
 
     const providers = Object.entries(u.perProvider || {})
       .sort((a, b) => b[1].requests - a[1].requests)
@@ -163,10 +180,14 @@
           <td>${p.requests}</td>
           <td>${fmtPct(p.successRate)}</td>
           <td>${fmtInt(p.total_tokens)}</td>
+          <td>${fmtKnownInt(p.cache_hit_tokens)}</td>
+          <td>${fmtKnownInt(p.cache_miss_tokens)}</td>
+          <td>${fmtPct(p.cacheHitRate)}</td>
+          <td>${fmtUsd(p.estimatedCostUsd)}</td>
           <td>${fmtMs(p.avgLatencyMs)}</td>
         </tr>
       `).join('');
-    $('#providerTable').innerHTML = providers || '<tr><td colspan="5" class="empty">暂无请求</td></tr>';
+    $('#providerTable').innerHTML = providers || '<tr><td colspan="9" class="empty">暂无请求</td></tr>';
   }
 
   function buildDayChart(perDay) {

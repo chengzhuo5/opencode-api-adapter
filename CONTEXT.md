@@ -35,3 +35,15 @@ _Avoid_: global fallback, legacy fallback
 **Request Preparation**:
 The ordered transformations applied before Provider Execution, including multimodal upgrade, historical image removal, history truncation, and optional context compression.
 _Avoid_: preprocessing, normalization
+
+**Provider Affinity**:
+The bounded session/model binding that keeps a cache-sensitive conversation on one Provider and updates only after a successful failover.
+_Avoid_: random routing, permanent pin
+
+**Cache Diagnostics**:
+Local HMAC fingerprints of the model-visible request, ordered tool schema, conversation key, and Provider endpoint. Raw prompts and tool output are never diagnostics.
+_Avoid_: prompt logging, trace payload
+
+**Compression Checkpoint**:
+A content-addressed, disk-persisted compressed tool output reused byte-for-byte across turns, concurrent requests, cache eviction, and process restart.
+_Avoid_: regenerated summary, transient compression

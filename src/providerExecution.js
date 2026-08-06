@@ -106,6 +106,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
   }
 
   const requestBody = normalizeResponsesRequest(body);
+  options.tracker?.annotate(options.cacheDiagnostics?.request('responses', requestBody));
   for (let index = 0; index < providers.length; index++) {
     const provider = providers[index];
     const nextProvider = providers[index + 1];
@@ -264,6 +265,7 @@ async function forwardChatFallback(res, body, config, fetchImpl, displayModel, o
 async function forwardConvertedRoute(res, body, route, config, fetchImpl, displayModel, options, adapter) {
   const effective = options.replay ? { ...body, stream: false } : body;
   const requestBody = adapter.requestBody(effective);
+  options.tracker?.annotate(options.cacheDiagnostics?.request(route.upstream, requestBody));
   const providers = routeProviders(route, config);
   for (let index = 0; index < providers.length; index++) {
     const provider = providers[index];
@@ -488,12 +490,30 @@ async function discardResponseBody(upstream) {
 
 function recordFailure(options, breakerKey, permit, endpoint, status, error, usage) {
   options.breaker?.recordFailure(breakerKey, permit.usedHalfOpenPermit);
-  options.tracker?.record({ endpoint, ok: false, status, error, usage });
+  options.tracker?.record({
+    endpoint,
+    provider_endpoint_hash: options.cacheDiagnostics?.endpoint(endpoint) ?? null,
+    ok: false,
+    status,
+    error,
+    usage
+  });
 }
 
 function recordSuccess(options, breakerKey, permit, endpoint, status, usage) {
   options.breaker?.recordSuccess(breakerKey, permit.usedHalfOpenPermit);
-  options.tracker?.record({ endpoint, ok: true, status, usage });
+  options.tracker?.record({
+    endpoint,
+    provider_endpoint_hash: options.cacheDiagnostics?.endpoint(endpoint) ?? null,
+    ok: true,
+    status,
+    usage
+  });
+  try {
+    options.onProviderSuccess?.(endpoint);
+  } catch {
+    // Affinity/observability hooks must never fail an otherwise successful request.
+  }
 }
 
 function logProtocolFallback(config, model, upstream, provider, nextProvider, reason, status) {

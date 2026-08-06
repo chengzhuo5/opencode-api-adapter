@@ -11,6 +11,8 @@ import { createHealthMonitor } from './health.js';
 import { createCircuitBreaker } from './circuitBreaker.js';
 import { createUsageLogger, createRequestTracker, readUsageLines, aggregateUsage } from './usageLog.js';
 import { createCodexManager } from './codexConfig.js';
+import { createProviderAffinity } from './providerAffinity.js';
+import { createCacheDiagnostics } from './cacheDiagnostics.js';
 
 const ADMIN_MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -47,6 +49,8 @@ export function createRouter(config, {
       })
     : null;
   const usageLogger = config?.usageLog?.enabled ? createUsageLogger(config) : null;
+  const providerAffinity = createProviderAffinity(config);
+  const cacheDiagnostics = createCacheDiagnostics(config);
   const codex = config?.codex?.enabled ? createCodexManager(config) : null;
   const server = http.createServer(async (req, res) => {
     try {
@@ -105,6 +109,7 @@ export function createRouter(config, {
             healthCheck: config.healthCheck,
             circuitBreaker: config.circuitBreaker,
             usageLog: config.usageLog,
+            providerStickiness: config.providerStickiness,
             compress: config.compress ? { enabled: config.compress.enabled, backend: config.compress.backend } : null,
             nonStreamingUpstream: Boolean(config.nonStreamingUpstream)
           },
@@ -187,9 +192,28 @@ export function createRouter(config, {
         validateResponsesRequest(body);
         const route = resolveRoute(config, maybeUpgradeModel(body).model);
         if (health) reorderProvidersByHealth(route, health);
-        const tracker = usageLogger ? createRequestTracker(body.model, { streamed: body.stream === true }) : null;
+        const affinityKey = providerAffinity.keyFor(body, req.headers);
+        providerAffinity.apply(route, affinityKey);
+        const tracker = usageLogger
+          ? createRequestTracker(body.model, {
+              streamed: body.stream === true,
+              pricing: route.entry?.pricing
+            })
+          : null;
+        tracker?.annotate({ conversation_key_hash: affinityKey });
         try {
-          await forward(res, body, route, config, fetchImpl, { client: ctxClient, storeDir: ctxStoreDir, cache: ctxCache, safety: ctxSafety, stats: ctxStats, breaker, tracker });
+          await forward(res, body, route, config, fetchImpl, {
+            client: ctxClient,
+            storeDir: ctxStoreDir,
+            cache: ctxCache,
+            safety: ctxSafety,
+            stats: ctxStats,
+            breaker,
+            tracker,
+            affinityKey,
+            cacheDiagnostics,
+            onProviderSuccess: (endpoint) => providerAffinity.recordSuccess(affinityKey, endpoint)
+          });
         } catch (error) {
           tracker?.record({ ok: false, status: 502, error: String(error?.message || 'internal error').slice(0, 200) });
           throw error;
@@ -260,7 +284,9 @@ async function forward(res, body, route, config, fetchImpl, compression) {
     await forwardRoute(res, effective, route, config, fetchImpl, body.model, {
       replay,
       breaker: compression?.breaker,
-      tracker: compression?.tracker
+      tracker: compression?.tracker,
+      onProviderSuccess: compression?.onProviderSuccess,
+      cacheDiagnostics: compression?.cacheDiagnostics
     });
     return;
   }
@@ -302,11 +328,32 @@ async function forward(res, body, route, config, fetchImpl, compression) {
       });
     }
   }
-  const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache, compression?.safety, compression?.stats);
+  const compressed = await maybeCompressInput(
+    upgraded,
+    config,
+    compression?.client,
+    compression?.storeDir,
+    compression?.cache,
+    compression?.safety,
+    compression?.stats,
+    {
+      safetyKey: compression?.affinityKey,
+      onMeta: (meta) => compression?.tracker?.annotate({
+        compression_checkpoint_id: meta.checkpoint_id,
+        compression_checkpoint_reused: meta.checkpoint_reused,
+        compression_prefix_changed: meta.prefix_changed,
+        compression_tokens_before: meta.tokens_before,
+        compression_tokens_after: meta.tokens_after,
+        compression_tokens_saved: meta.tokens_saved
+      })
+    }
+  );
   await forwardRoute(res, compressed, route, config, fetchImpl, body.model, {
     replay,
     breaker: compression?.breaker,
-    tracker: compression?.tracker
+    tracker: compression?.tracker,
+    onProviderSuccess: compression?.onProviderSuccess,
+    cacheDiagnostics: compression?.cacheDiagnostics
   });
 }
 

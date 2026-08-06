@@ -101,6 +101,96 @@ test('compressInput caches repeated outputs and only compresses new ones', async
   assert.equal(out2[1].output, 'AC2');
 });
 
+test('compressInput coalesces concurrent checkpoint generation for the same output', async () => {
+  let calls = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const client = {
+    compress: async () => {
+      calls += 1;
+      await gate;
+      return { messages: [{ role: 'user', content: `stable-${calls}` }], stats: {} };
+    }
+  };
+  const cache = new Map();
+  const item = {
+    type: 'function_call_output',
+    id: 'fco1',
+    call_id: 'c1',
+    output: 'A'.repeat(1000)
+  };
+  const firstCtx = { client, model: 'x', storeDir: null, cache, log: () => {} };
+  const secondCtx = { client, model: 'x', storeDir: null, cache, log: () => {} };
+  const firstPromise = compressInput([item], firstCtx);
+  const secondPromise = compressInput([item], secondCtx);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1, 'concurrent requests must share one compression operation');
+  release();
+  const [first, second] = await Promise.all([firstPromise, secondPromise]);
+  assert.equal(first[0].output, second[0].output);
+  assert.equal(firstCtx.meta.outputs[0].checkpointSource, 'generated');
+  assert.equal(secondCtx.meta.outputs[0].checkpointSource, 'inflight');
+});
+
+test('compressInput reuses a persisted checkpoint after process-local cache loss', async () => {
+  const storeDir = tmpdir();
+  let firstCalls = 0;
+  const firstClient = {
+    compress: async () => {
+      firstCalls += 1;
+      return { messages: [{ role: 'user', content: 'stable checkpoint' }], stats: {} };
+    }
+  };
+  const item = {
+    type: 'function_call_output',
+    id: 'fco1',
+    call_id: 'c1',
+    output: 'A'.repeat(1000)
+  };
+  const firstCtx = { client: firstClient, model: 'x', storeDir, cache: new Map(), log: () => {} };
+  const first = await compressInput([item], firstCtx);
+  assert.equal(firstCalls, 1);
+
+  let restartedCalls = 0;
+  const restartedClient = {
+    compress: async () => {
+      restartedCalls += 1;
+      return { messages: [{ role: 'user', content: 'different summary' }], stats: {} };
+    }
+  };
+  const restartedCtx = { client: restartedClient, model: 'x', storeDir, cache: new Map(), log: () => {} };
+  const restarted = await compressInput([item], restartedCtx);
+  assert.equal(restartedCalls, 0, 'persisted checkpoint must avoid regenerating old summaries');
+  assert.equal(restarted[0].output, first[0].output);
+  assert.equal(restartedCtx.meta.outputs[0].checkpointReused, true);
+  assert.equal(restartedCtx.meta.outputs[0].checkpointSource, 'disk');
+  assert.match(restartedCtx.meta.overall.checkpoint_id, /^[a-f0-9]{64}$/);
+  assert.equal(restartedCtx.meta.overall.checkpoint_reused, true);
+});
+
+test('compressInput leaves outputs below the fixed threshold append-only', async () => {
+  let calls = 0;
+  const client = {
+    compress: async () => {
+      calls += 1;
+      return { messages: [{ role: 'user', content: 'compressed' }], stats: {} };
+    }
+  };
+  const item = { type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'short' };
+  const ctx = {
+    client,
+    model: 'x',
+    storeDir: null,
+    cache: new Map(),
+    minOutputTokens: 100,
+    log: () => {}
+  };
+  const output = await compressInput([item], ctx);
+  assert.equal(calls, 0);
+  assert.equal(output[0], item);
+  assert.equal(ctx.meta.overall.outputs_skipped, 1);
+});
+
 test('compressInput archives originals and leaves explicit ctx markers for retrieval', async () => {
   const client = { compress: async () => ({ messages: [{ role: 'user', content: 'tiny' }], stats: {} }) };
   const ctx = { client, model: 'x', storeDir: tmpdir(), cache: new Map(), log: () => {} };

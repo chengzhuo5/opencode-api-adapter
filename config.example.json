@@ -20,7 +20,12 @@
           "url": "https://api.deepseek.com/v1",
           "apiKeyEnv": "DEEPSEEK_API_KEY"
         }
-      ]
+      ],
+      "pricing": {
+        "cachedInputUsdPerMillion": null,
+        "uncachedInputUsdPerMillion": null,
+        "outputUsdPerMillion": null
+      }
     }
   },
   "modelPatterns": {
@@ -35,6 +40,11 @@
   "usageLog": {
     "enabled": true,
     "file": "usage/requests.jsonl"
+  },
+  "providerStickiness": {
+    "enabled": true,
+    "ttlMs": 21600000,
+    "maxEntries": 10000
   },
   "codex": {
     "enabled": true,
@@ -53,6 +63,7 @@
     "token": "",
     "storeDir": "ctx-store",
     "cacheSize": 1000,
+    "minOutputTokens": 2048,
     "timeoutMs": 30000,
     "logLevel": "verbose"
   },

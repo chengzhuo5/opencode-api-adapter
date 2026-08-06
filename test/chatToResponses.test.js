@@ -113,14 +113,20 @@ test('carries streamed usage into response.completed', async () => {
   const body = streamFromChunks([
     'data: {"choices":[{"delta":{"role":"assistant","content":"he"}}]}\n\n',
     'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n',
-    'data: {"choices":[],"usage":{"prompt_tokens":123,"completion_tokens":2,"total_tokens":125}}\n\n',
+    'data: {"choices":[],"usage":{"prompt_tokens":123,"completion_tokens":2,"total_tokens":125,"prompt_cache_hit_tokens":100,"prompt_cache_miss_tokens":23}}\n\n',
     'data: [DONE]\n\n'
   ]);
   const events = [];
   await translateChatStreamToResponses(body, 'deepseek-v4-flash', (event, data) => events.push({ event, data }));
   const completed = events.find((item) => item.event === 'response.completed');
   assert.ok(completed, 'expected response.completed');
-  assert.deepEqual(completed.data.response.usage, { prompt_tokens: 123, completion_tokens: 2, total_tokens: 125 });
+  assert.deepEqual(completed.data.response.usage, {
+    prompt_tokens: 123,
+    completion_tokens: 2,
+    total_tokens: 125,
+    prompt_cache_hit_tokens: 100,
+    prompt_cache_miss_tokens: 23
+  });
 });
 
 test('response object always carries top-level input/output tokens', () => {

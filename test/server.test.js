@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRouter } from '../src/server.js';
@@ -58,8 +58,13 @@ test('usage endpoint reports logged request', async () => {
       return new Response(JSON.stringify({
         id: 'resp_1',
         object: 'response',
-        model: 'gpt-5.6-luna',
-        usage: { input_tokens: 10, output_tokens: 5 }
+        model: 'deepseek-v4-flash',
+        usage: {
+          input_tokens: 10,
+          output_tokens: 5,
+          prompt_cache_hit_tokens: 7,
+          prompt_cache_miss_tokens: 3
+        }
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     throw new Error('unexpected upstream: ' + url);
@@ -73,16 +78,35 @@ test('usage endpoint reports logged request', async () => {
     const res = await fetch(base + '/v1/responses', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] })
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: false,
+        metadata: { session_id: 'usage-test-session' },
+        input: [{
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'private text must never enter usage logs' }]
+        }]
+      })
     });
     assert.equal(res.status, 200);
+    const rawLog = readFileSync(file, 'utf8');
+    const entry = JSON.parse(rawLog.trim());
+    assert.match(entry.conversation_key_hash, /^[a-f0-9]{64}$/);
+    assert.match(entry.model_visible_prefix_hash, /^[a-f0-9]{64}$/);
+    assert.match(entry.tool_schema_hash, /^[a-f0-9]{64}$/);
+    assert.match(entry.provider_endpoint_hash, /^[a-f0-9]{64}$/);
+    assert.equal(rawLog.includes('private text'), false);
     const statsRes = await fetch(base + '/v1/usage?days=7');
     const stats = await statsRes.json();
     assert.equal(stats.totalRequests, 1);
     assert.equal(stats.successRate, 1);
     assert.equal(stats.totalInputTokens, 10);
     assert.equal(stats.totalOutputTokens, 5);
-    assert.equal(stats.perModel['gpt-5.6-luna'].requests, 1);
+    assert.equal(stats.totalCacheHitTokens, 7);
+    assert.equal(stats.totalCacheMissTokens, 3);
+    assert.equal(stats.cacheHitRate, 0.7);
+    assert.equal(stats.perModel['deepseek-v4-flash'].requests, 1);
   });
   rmSync(dir, { recursive: true, force: true });
 });
@@ -503,6 +527,68 @@ test('provider failover cancels the discarded upstream response body', async () 
   });
 
   assert.equal(cancelled, 1);
+});
+
+test('provider failover updates bounded session affinity', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes('responses-a')) {
+      return new Response(JSON.stringify({ error: { message: 'temporary failure' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'resp_1',
+      object: 'response',
+      model: 'deepseek-v4-flash',
+      output: [],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 1,
+        prompt_cache_hit_tokens: 8,
+        prompt_cache_miss_tokens: 2
+      }
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    providerStickiness: { enabled: true, ttlMs: 60_000, maxEntries: 100 },
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'responses',
+        endpoint: [
+          { url: 'https://responses-a/v1', apiKey: 'a-key' },
+          { url: 'https://responses-b/v1', apiKey: 'b-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    for (const sessionId of ['session-1', 'session-1', 'session-2']) {
+      const res = await fetch(`${base}/v1/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'deepseek-v4-flash',
+          stream: false,
+          metadata: { session_id: sessionId },
+          input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] }]
+        })
+      });
+      assert.equal(res.status, 200);
+    }
+  });
+
+  assert.deepEqual(calls, [
+    'https://responses-a/v1/responses',
+    'https://responses-b/v1/responses',
+    'https://responses-b/v1/responses',
+    'https://responses-a/v1/responses',
+    'https://responses-b/v1/responses'
+  ]);
 });
 
 test('chat route skips a provider opened by the shared circuit breaker', async () => {

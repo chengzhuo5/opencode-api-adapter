@@ -28,6 +28,11 @@ export const DEFAULT_CONFIG = {
     enabled: false,
     file: 'usage/requests.jsonl'
   },
+  providerStickiness: {
+    enabled: true,
+    ttlMs: 21600000,
+    maxEntries: 10000
+  },
   codex: {
     enabled: false,
     configPath: path.join(os.homedir(), '.codex', 'config.toml'),
@@ -45,6 +50,7 @@ export const DEFAULT_CONFIG = {
     token: '',
     storeDir: 'ctx-store',
     cacheSize: 1000,
+    minOutputTokens: 2048,
     timeoutMs: 30000,
     logLevel: 'verbose'
   }
@@ -64,6 +70,10 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     healthCheck: { ...DEFAULT_CONFIG.healthCheck, ...(raw.healthCheck || {}) },
     circuitBreaker: { ...DEFAULT_CONFIG.circuitBreaker, ...(raw.circuitBreaker || {}) },
     usageLog: { ...DEFAULT_CONFIG.usageLog, ...(raw.usageLog || {}) },
+    providerStickiness: {
+      ...DEFAULT_CONFIG.providerStickiness,
+      ...(raw.providerStickiness || {})
+    },
     codex: { ...DEFAULT_CONFIG.codex, ...(raw.codex || {}) }
   };
   const requireEnv = (name, context) => {
