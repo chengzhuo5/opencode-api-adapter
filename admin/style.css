@@ -61,6 +61,13 @@ body {
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: var(--accent-soft); color: var(--accent); }
 .nav-icon { font-size: 15px; opacity: .9; }
+.nav-item:focus-visible,
+.btn:focus-visible,
+select:focus-visible,
+#configEditor:focus-visible {
+  outline: 3px solid rgba(79, 99, 232, .28);
+  outline-offset: 2px;
+}
 
 .sidebar-foot {
   display: flex; align-items: center; gap: 8px;
@@ -76,12 +83,12 @@ body {
 /* Main */
 .main { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
 .topbar {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap;
   padding: 20px 28px 14px; background: var(--bg);
 }
 .topbar h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
 .subtitle { margin: 3px 0 0; color: var(--text-3); font-size: 12.5px; }
-.topbar-actions { display: flex; align-items: center; gap: 10px; }
+.topbar-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .pill {
   background: var(--surface); border: 1px solid var(--border); color: var(--text-2);
   font-size: 12px; padding: 4px 10px; border-radius: 999px; font-weight: 500;
@@ -153,7 +160,7 @@ td.mono, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 1
 .btn.danger:hover { background: #c7353b; }
 .btn.ghost { color: var(--text-2); }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
-.btn-group { display: flex; gap: 8px; }
+.btn-group { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Toolbar */
 .toolbar {
@@ -205,4 +212,19 @@ select:focus { border-color: var(--accent); }
   .brand-text, .nav-item span:not(.nav-icon) { display: none; }
   .nav-item { justify-content: center; }
   .view { padding: 4px 14px 20px; }
+}
+
+@media (max-width: 600px) {
+  .sidebar { width: 56px; flex-basis: 56px; padding-inline: 5px; }
+  .brand { justify-content: center; padding-inline: 0; }
+  .brand-logo { width: 32px; height: 32px; }
+  .topbar { padding: 14px 14px 10px; gap: 10px; }
+  .topbar > div:first-child,
+  .topbar-actions { width: 100%; }
+  .topbar-actions { justify-content: flex-start; }
+  .panel-head { align-items: flex-start; flex-wrap: wrap; }
+  .toolbar { flex-wrap: wrap; gap: 10px; }
+  .config-head .btn-group { width: 100%; }
+  .config-head .btn-group .btn { flex: 1 1 110px; }
+  .toasts { left: 12px; right: 12px; max-width: none; }
 }

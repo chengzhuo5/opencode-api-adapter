@@ -624,3 +624,8 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **修复**：`timeouts.drainMs`（默认 15 秒）现在同时用于热加载和停止 drain；到期调用 `closeAllConnections()`，清理 `__routerCleanup` 并释放 generation。保留活动请求在窗口内自然完成，超过窗口才强制结束。
 - **验证**：新增永不结束 SSE 的热加载回归（`drainMs=40`），确认 replacement listener 接管后旧上游 body 被 cancel、客户端流结束；`test/main.test.js` 4/4 通过。
 - **缓存约束**：只改变旧 generation 的资源生命周期，不改变新请求模型可见内容、DeepSeek hit/miss usage、Provider 粘性或工具顺序。
+
+## 2026-08-06：管理页移动端与键盘可访问性收口（本阶段）
+
+- **修复**：`admin/style.css` 为 topbar、按钮组和小屏布局增加换行；600px 以下收窄侧栏、把操作区堆叠到可点击宽度、保留表格横向滚动，并给导航/按钮/select/config editor 增加 `:focus-visible` 焦点环。
+- **约束**：纯静态 UI 改动，不改变管理 API、轮询 single-flight 或任何模型可见请求。
