@@ -97,29 +97,40 @@ function normalizeResponsesItem(item) {
 }
 
 /**
- * Responses 直通路径不允许出现没有对应 function_call 的 function_call_output。
+ * Responses 直通路径不允许出现没有对应调用项的工具输出。
  * 旧会话里被中断/截断的工具轮次会留下孤立输出（例如 maxHistoryMessages 从一轮
  * 工具的中间切掉），ergou 等兼容端点会报
  * "function_call_output requires previous_response_id or item_reference ids
- * matching each call_id"。这里只剔除没有可匹配 function_call 的
- * function_call_output；尚未收到输出应答的 function_call 保留，因为它是
- * 上一轮可能仍待执行的调用（chat 转 responses 的历史往返也依赖这一点）。
+ * matching each call_id"，或 "No tool call found for tool search output"。
+ * Codex 除 function/custom tools 外还会产生 tool_search、computer、MCP 等
+ * `*_call` / `*_output` 项，因此统一按 call_id 配对；尚未收到输出应答的调用项
+ * 保留，因为它可能仍待执行（chat 转 responses 的历史往返也依赖这一点）。
  */
 export function sanitizeResponsesToolPairs(items) {
   const callIds = new Set();
   for (const item of items) {
-    if (item && typeof item === 'object'
-      && (item.type === 'function_call' || item.type === 'custom_tool_call')
-      && item.call_id) {
+    if (isToolCallItem(item) && item.call_id) {
       callIds.add(item.call_id);
     }
   }
   return items.filter((item) => (
-    !item
-    || typeof item !== 'object'
-    || !(item.type === 'function_call_output' || item.type === 'custom_tool_call_output')
+    !isToolOutputItem(item)
     || (item.call_id && callIds.has(item.call_id))
   ));
+}
+
+function isToolCallItem(item) {
+  if (!item || typeof item !== 'object' || typeof item.type !== 'string') return false;
+  return item.type === 'function_call'
+    || item.type === 'custom_tool_call'
+    || item.type.endsWith('_call');
+}
+
+function isToolOutputItem(item) {
+  if (!item || typeof item !== 'object' || typeof item.type !== 'string') return false;
+  return item.type === 'function_call_output'
+    || item.type === 'custom_tool_call_output'
+    || item.type.endsWith('_output');
 }
 
 function normalizeContent(content) {

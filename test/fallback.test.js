@@ -122,6 +122,84 @@ test('fallback retries chat on network error', async () => {
   assert.equal(calls.length, 2);
 });
 
+test('chat fallback tries global provider arrays in order', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.endsWith('/responses') || url.includes('chat-a')) {
+      return new Response(JSON.stringify({ error: { message: 'down' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'chatcmpl-1',
+      created: 1,
+      model: 'deepseek-v4-flash',
+      choices: [{ message: { role: 'assistant', content: 'ok' } }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: [
+      { url: 'https://chat-a/v1', apiKey: 'a-key' },
+      { url: 'https://chat-b/v1', apiKey: 'b-key' }
+    ],
+    models: {}
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [] })
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).output[0].content[0].text, 'ok');
+  });
+  assert.deepEqual(calls, [
+    'https://chat-a/v1/responses',
+    'https://chat-b/v1/responses',
+    'https://chat-a/v1/chat/completions',
+    'https://chat-b/v1/chat/completions'
+  ]);
+});
+
+test('each responses provider attempt receives an independent timeout signal', async () => {
+  const signals = [];
+  const fetchImpl = async (url, init) => {
+    signals.push(init.signal);
+    if (url.includes('provider-a')) {
+      return new Response(JSON.stringify({ error: { message: 'down' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: null,
+    models: {
+      'gpt-5.6-luna': {
+        upstream: 'responses',
+        endpoint: ['https://provider-a/v1', 'https://provider-b/v1'],
+        apiKey: 'provider-key'
+      }
+    }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(signals.length, 2);
+  assert.notEqual(signals[0], signals[1]);
+});
+
 test('circuit breaker skips failing provider on subsequent requests', async () => {
   const calls = [];
   const fetchImpl = async (url) => {

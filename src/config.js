@@ -66,12 +66,21 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     usageLog: { ...DEFAULT_CONFIG.usageLog, ...(raw.usageLog || {}) },
     codex: { ...DEFAULT_CONFIG.codex, ...(raw.codex || {}) }
   };
-  const apiKey = env[config.apiKeyEnv];
-  if (!apiKey) throw new Error(`missing ${config.apiKeyEnv} environment variable`);
-  const normalizeEndpoint = (endpoint, defaultKey) => {
+  const requireEnv = (name, context) => {
+    const value = env[name];
+    if (!value) throw new Error(`missing ${name} environment variable for ${context}`);
+    return value;
+  };
+  const apiKey = requireEnv(config.apiKeyEnv, 'apiBaseUrl');
+  const normalizeEndpoint = (endpoint, defaultKey, context) => {
     const mapOne = (item) => {
       if (item && typeof item === 'object' && !Array.isArray(item)) {
-        return { ...item, apiKey: item.apiKeyEnv ? env[item.apiKeyEnv] : defaultKey };
+        return {
+          ...item,
+          apiKey: item.apiKeyEnv
+            ? requireEnv(item.apiKeyEnv, context)
+            : defaultKey
+        };
       }
       return item;
     };
@@ -81,8 +90,14 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
   const models = {};
   for (const [id, entry] of Object.entries(config.models || {})) {
     if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-      const entryKey = entry.apiKeyEnv ? env[entry.apiKeyEnv] : apiKey;
-      models[id] = { ...entry, apiKey: entryKey, endpoint: normalizeEndpoint(entry.endpoint, entryKey) };
+      const entryKey = entry.apiKeyEnv
+        ? requireEnv(entry.apiKeyEnv, `model ${id}`)
+        : apiKey;
+      models[id] = {
+        ...entry,
+        apiKey: entryKey,
+        endpoint: normalizeEndpoint(entry.endpoint, entryKey, `model ${id} endpoint`)
+      };
     } else {
       models[id] = entry;
     }
@@ -90,11 +105,23 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
   const modelPatterns = {};
   for (const [pattern, entry] of Object.entries(config.modelPatterns || {})) {
     if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-      const entryKey = entry.apiKeyEnv ? env[entry.apiKeyEnv] : apiKey;
-      modelPatterns[pattern] = { ...entry, apiKey: entryKey, endpoint: normalizeEndpoint(entry.endpoint, entryKey) };
+      const entryKey = entry.apiKeyEnv
+        ? requireEnv(entry.apiKeyEnv, `model pattern ${pattern}`)
+        : apiKey;
+      modelPatterns[pattern] = {
+        ...entry,
+        apiKey: entryKey,
+        endpoint: normalizeEndpoint(entry.endpoint, entryKey, `model pattern ${pattern} endpoint`)
+      };
     } else {
       modelPatterns[pattern] = entry;
     }
   }
-  return { ...config, apiKey, models, modelPatterns, apiBaseUrl: normalizeEndpoint(config.apiBaseUrl, apiKey) };
+  return {
+    ...config,
+    apiKey,
+    models,
+    modelPatterns,
+    apiBaseUrl: normalizeEndpoint(config.apiBaseUrl, apiKey, 'apiBaseUrl')
+  };
 }

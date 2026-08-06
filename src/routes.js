@@ -34,6 +34,55 @@ export class UnknownModelError extends Error {
   }
 }
 
+export class RouteConfigurationError extends Error {
+  constructor(message, model) {
+    super(message);
+    this.name = 'RouteConfigurationError';
+    this.model = model;
+    this.statusCode = 503;
+  }
+}
+
+const VALID_UPSTREAMS = new Set(['responses', 'chat', 'messages']);
+const PROTOCOL_SUFFIXES = ['/chat/completions', '/responses', '/messages'];
+
+export function buildProtocolEndpoint(base, suffix) {
+  const raw = typeof base === 'object' && base !== null ? base.url : base;
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  let url;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    throw new RouteConfigurationError(`invalid provider URL: ${raw}`);
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new RouteConfigurationError(`unsupported provider URL protocol: ${url.protocol}`);
+  }
+  let pathname = url.pathname.replace(/\/+$/, '');
+  const existingSuffix = PROTOCOL_SUFFIXES.find((candidate) => pathname.endsWith(candidate));
+  if (existingSuffix) pathname = pathname.slice(0, -existingSuffix.length);
+  url.pathname = `${pathname.replace(/\/+$/, '')}/${suffix}`.replace(/\/{2,}/g, '/');
+  return url.toString();
+}
+
+export function resolveProviders(value, suffix, defaultKey) {
+  const bases = Array.isArray(value) ? value : [value];
+  const providers = [];
+  const seen = new Set();
+  for (const base of bases) {
+    const endpoint = buildProtocolEndpoint(base, suffix);
+    if (!endpoint) continue;
+    const apiKey = typeof base === 'object' && base !== null
+      ? base.apiKey ?? defaultKey
+      : defaultKey;
+    const identity = `${endpoint}\0${apiKey ?? ''}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    providers.push({ endpoint, apiKey });
+  }
+  return providers;
+}
+
 /**
  * 通配符匹配（`*` 匹配任意串，`?` 匹配单字符），返回匹配到的 pattern 键。
  * 多个 pattern 命中时取更具体的（pattern 字符串更长者优先）。
@@ -62,40 +111,30 @@ export function resolveRoute(config, model) {
   const entry = getModelEntry(config, model);
   const upstream = entry?.upstream ?? DEFAULT_MODEL_ROUTES[model];
   if (!upstream) throw new UnknownModelError(model);
-  const effective = upstream === 'messages' ? 'messages' : upstream === 'chat' ? 'chat' : 'responses';
+  if (!VALID_UPSTREAMS.has(upstream)) {
+    throw new RouteConfigurationError(`invalid upstream "${upstream}" for model ${model}`, model);
+  }
+  const effective = upstream;
   const suffix = effective === 'messages' ? 'messages' : effective === 'chat' ? 'chat/completions' : 'responses';
-  const toBases = (value) => (Array.isArray(value) ? value : [value]).filter((v) => (
-    (typeof v === 'string' && v) || (v && typeof v === 'object' && typeof v.url === 'string' && v.url)
-  ));
-  const customBases = toBases(entry?.endpoint);
-  const globalBases = toBases(config.apiBaseUrl);
-  const toProvider = (base, defaultKey) => (
-    typeof base === 'object'
-      ? { endpoint: `${base.url}/${suffix}`, apiKey: base.apiKey ?? defaultKey }
-      : { endpoint: `${base}/${suffix}`, apiKey: defaultKey }
-  );
+  const customProviders = resolveProviders(entry?.endpoint, suffix, entry?.apiKey ?? config.apiKey);
+  const globalProviders = resolveProviders(config.apiBaseUrl, suffix, config.apiKey);
   // 自定义 provider（模型级 endpoint）存在时不再追加全局 apiBaseUrl：
   // 有模型级端点说明用户已为该模型指定服务商，opencode 全局兜底不适用
   // （例如 gpt-5.6-sol 只存在于 ergou，opencode 不支持，fallback 过去只会 401）。
-  const providers = customBases.length > 0
-    ? customBases.map((base) => toProvider(base, entry?.apiKey ?? config.apiKey))
-    : globalBases.map((base) => toProvider(base, config.apiKey));
-  const seen = new Set();
-  const unique = providers.filter((p) => {
-    if (seen.has(p.endpoint)) return false;
-    seen.add(p.endpoint);
-    return true;
-  });
+  const providers = customProviders.length > 0 ? customProviders : globalProviders;
+  if (!providers.length) {
+    throw new RouteConfigurationError(`no provider configured for model ${model}`, model);
+  }
   return {
     model,
     upstream: effective,
     entry,
-    endpoint: unique[0]?.endpoint,
-    apiKey: unique[0]?.apiKey,
-    fallbackEndpoint: unique[1]?.endpoint ?? null,
-    fallbackApiKey: unique[1]?.apiKey ?? null,
-    providers: unique,
-    customProviderCount: customBases.length
+    endpoint: providers[0].endpoint,
+    apiKey: providers[0].apiKey,
+    fallbackEndpoint: providers[1]?.endpoint ?? null,
+    fallbackApiKey: providers[1]?.apiKey ?? null,
+    providers,
+    customProviderCount: customProviders.length
   };
 }
 

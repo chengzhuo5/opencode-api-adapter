@@ -28,6 +28,43 @@ Responses 历史要求每个 `function_call_output.call_id` 都能匹配到输�
 当前 shell 无法提权重启 CodexRouter 服务，需用户执行
 `sudo powershell -NoProfile -Command "Restart-Service CodexRouter"`（或 NSSM 重启）。
 
+## 2026-08-06：路由全面排查——tool_search 截断 400 + 三协议 provider 一致性
+
+**真实失败证据**：服务进程已加载 2026-08-05 23:48 的最新代码，但 2026-08-06
+11:22:55、11:25:35 两个 gpt-5.6-sol 任务仍稳定报 400：
+`No tool call found for tool search output with call_id ...`。对应 rollout 中原本同时存在
+`tool_search_call` 与 `tool_search_output`；`maxHistoryMessages: 10` 从二者中间截断后，
+只把 output 发给 ergou。近 3 小时另外 6 个 DeepSeek 最终 502，日志证实链路是官方
+Responses 先 400，再尝试 OpenCode Responses 时网络失败；同类非法工具历史会放大成
+“备用端点网络 502”。
+
+**根因与修复**：
+
+1. `sanitizeResponsesToolPairs` 过去只配对 `function_call(_output)` /
+   `custom_tool_call(_output)`，没有覆盖 Codex 的 `tool_search_call/output` 及其他
+   `*_call` / `*_output`。现统一按 `call_id` 配对所有工具项：孤立 output 删除，
+   完整 call+output 保留。真实截断形状已写入 server 集成回归测试。
+2. 三种上游协议的 provider 行为不一致：Responses 会遍历数组，Chat/Messages 只请求
+   第一个；Messages 还错误使用全局 `config.apiKey`，忽略模型/端点 key；全局
+   `apiBaseUrl` 为数组时 Chat fallback 会拼成
+   `[object Object],[object Object]/chat/completions`。现 Chat、Messages、Responses
+   都按序 failover，使用实际 provider key，且每次尝试创建独立 timeout signal。
+3. URL 过去直接字符串拼接，尾斜杠会生成 `//responses`，已带 `/messages` 等完整路径
+   会重复追加。`routes.js` 现统一规范化三种协议后缀；同 URL 不同 key 会作为备用凭据
+   保留；非法 upstream、URL 或空 provider 返回明确配置错误（HTTP 503）。
+4. 健康探测过去硬编码 `/responses` + Bearer + Responses 请求体，Chat/Messages 会被
+   误判。现通过实际解析后的 route 构造协议正确的路径、鉴权头与最小请求体，并用
+   `Promise.all` 并行探测，避免 provider 数量增加后探测时间线性累积。
+5. 请求入口现把非法 JSON/缺失 model 返回 400；模型或端点显式声明的 `apiKeyEnv`
+   缺失时启动直接失败，不再静默发送 `undefined` key。
+
+**验证**：新增真实 tool_search 截断、三协议 provider failover/key、全局 Chat 数组、
+URL 规范化、独立 timeout、协议健康探针、请求/配置错误分类等回归；全套测试通过。
+
+**部署注意**：`/api/restart` 只热加载配置，不会重载源码。本次代码必须重启
+Windows 服务 `CodexRouter` 后才生效；重启后应检查 `/healthz`、`/api/status`，
+并用最小 Responses 请求确认实际 provider。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

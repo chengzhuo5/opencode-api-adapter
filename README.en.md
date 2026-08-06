@@ -92,13 +92,13 @@ By default every model is routed to `apiBaseUrl` (OpenCode Go). Any model can be
 ```
 
 - Priority: exact `models` entry > `modelPatterns` match (longest pattern wins) > default route.
-- `endpoint`: base URL of the custom provider (the router appends `/responses` or `/messages`)
-- `apiKeyEnv`: environment variable holding the provider API key; falls back to the global `apiKeyEnv` when omitted
+- `endpoint`: base URL of the custom provider (the router appends `/responses`, `/chat/completions`, or `/messages` according to the protocol). Trailing slashes and already-suffixed full URLs are normalized to avoid duplicated paths.
+- `apiKeyEnv`: environment variable holding the provider API key; falls back to the global `apiKeyEnv` when omitted. If explicitly configured but missing, startup fails immediately instead of sending an empty key.
 - `maxHistoryMessages`: optional, keep only the latest N messages before forwarding (for providers with small context windows, e.g. ergou luna); no truncation by default
 - `contextWindow`: optional, overrides the catalog `context_window` for this model (Codex uses it to decide when to compact). The ergou GPT family defaults to 353K.
 - Priority: custom provider (exclusive when configured) → `apiBaseUrl` (only for models without a custom endpoint) → protocol fallback (chat/completions, only when `apiBaseUrl` exists; set `apiBaseUrl` to `null` to disable the global fallback entirely)
 
-Both `endpoint` and the global `apiBaseUrl` accept a **string or an array**: with an array, providers are tried in order and the first successful response wins. Each element can be a string (uses the model/global default key) or an object `{ "url": "...", "apiKeyEnv": "..." }` to assign a dedicated key to that endpoint:
+Both `endpoint` and the global `apiBaseUrl` accept a **string or an array**. Responses, Chat Completions, and Anthropic Messages routes all try providers in order with an independent timeout per attempt; the first successful response wins. Each element can be a string (uses the model/global default key) or an object `{ "url": "...", "apiKeyEnv": "..." }` to assign a dedicated key to that endpoint:
 
 ```json
 {
@@ -140,7 +140,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 The two layers complement each other:
 
-- `healthCheck` sends a streaming probe every `intervalMs`; failed providers are moved to the end of the queue and restored automatically when they recover (`provider_health` log events).
+- `healthCheck` sends protocol-correct probes in parallel every `intervalMs` (Responses/Chat/Messages use their own path, request body, and authentication headers); failed providers are moved to the end of the queue and restored automatically when they recover (`provider_health` log events).
 - `circuitBreaker` is disabled by default (`enabled: false`); turn it on when needed. It is driven by real request outcomes, tracked per `model::endpoint`. A provider is tripped after `failureThreshold` consecutive failures, or once at least `minRequests` requests have an error rate above `errorRateThreshold`; after `timeoutMs` one half-open probe is allowed, and `successThreshold` consecutive probe successes close the breaker. State changes emit `provider_circuit` log events.
 
 ### Request log and usage stats

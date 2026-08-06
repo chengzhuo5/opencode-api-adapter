@@ -79,3 +79,42 @@ test('router skips unhealthy opencode provider and falls back to deepseek offici
     server.close();
   }
 });
+
+test('health monitor probes messages providers with their protocol and credentials', async () => {
+  const calls = [];
+  const monitor = createHealthMonitor({
+    config: {
+      models: {
+        'minimax-m3': {
+          upstream: 'messages',
+          endpoint: [
+            { url: 'https://messages-a/v1/', apiKey: 'a-key' },
+            { url: 'https://messages-b/v1/messages', apiKey: 'b-key' }
+          ]
+        }
+      },
+      healthCheck: {
+        enabled: true,
+        models: ['minimax-m3'],
+        intervalMs: 60000,
+        timeoutMs: 5000
+      }
+    },
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init, body: JSON.parse(init.body) });
+      return new Response(JSON.stringify({ id: 'msg_1', content: [{ type: 'text', text: 'ok' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  });
+  const result = await monitor.probeAll();
+  assert.equal(result.every((item) => item.healthy), true);
+  assert.deepEqual(calls.map((call) => call.url), [
+    'https://messages-a/v1/messages',
+    'https://messages-b/v1/messages'
+  ]);
+  assert.deepEqual(calls.map((call) => call.init.headers['x-api-key']), ['a-key', 'b-key']);
+  assert.equal(calls.every((call) => call.init.headers['anthropic-version'] === '2023-06-01'), true);
+  assert.equal(calls.every((call) => call.body.max_tokens === 1), true);
+});

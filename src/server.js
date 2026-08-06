@@ -1,7 +1,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { resolveRoute, UnknownModelError } from './routes.js';
+import { resolveRoute, UnknownModelError, RouteConfigurationError } from './routes.js';
 import { sseEncode } from './sse.js';
 import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js';
 import { responsesToChatRequest } from './translate/responsesToChat.js';
@@ -189,6 +189,7 @@ export function createRouter(config, {
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const body = await readJson(req);
+        validateResponsesRequest(body);
         const route = resolveRoute(config, maybeUpgradeModel(body).model);
         if (health) reorderProvidersByHealth(route, health);
         const tracker = usageLogger ? createRequestTracker(body.model, { streamed: body.stream === true }) : null;
@@ -204,7 +205,7 @@ export function createRouter(config, {
       }
       sendJson(res, 404, { error: { message: `not found: ${req.method} ${url.pathname}` } });
     } catch (error) {
-            if (res.headersSent || res.writableEnded) {
+      if (res.headersSent || res.writableEnded) {
         logEvent(config, {
           event: 'stream_aborted',
           reason: error?.message || 'streaming relay error'
@@ -212,7 +213,11 @@ export function createRouter(config, {
         try { res.end(); } catch { /* noop */ }
         return;
       }
-if (error instanceof UnknownModelError) sendJson(res, 400, { error: { message: error.message } });
+      if (error instanceof RequestValidationError || error instanceof UnknownModelError) {
+        sendJson(res, 400, { error: { message: error.message } });
+      } else if (error instanceof RouteConfigurationError) {
+        sendJson(res, error.statusCode || 503, { error: { message: error.message } });
+      }
       else sendJson(res, 500, { error: { message: error.message || 'internal error' } });
     }
   });
@@ -246,6 +251,8 @@ function reorderProvidersByHealth(route, health) {
     route.providers = reordered;
     route.endpoint = reordered[0]?.endpoint;
     route.apiKey = reordered[0]?.apiKey;
+    route.fallbackEndpoint = reordered[1]?.endpoint ?? null;
+    route.fallbackApiKey = reordered[1]?.apiKey ?? null;
   }
 }
 
@@ -255,44 +262,10 @@ async function forward(res, body, route, config, fetchImpl, compression) {
   const replay = Boolean(config.nonStreamingUpstream && body.stream === true);
   const effective = replay ? { ...body, stream: false } : body;
   if (route.upstream === 'messages') {
-    const headers = {
-      'content-type': 'application/json',
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01'
-    };
-    const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
-    const requestBody = responsesToAnthropicRequest(effective);
-    const upstream = await fetchImpl(route.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
-    if (!upstream.ok) {
-      compression?.tracker?.record({ endpoint: route.endpoint, ok: false, status: upstream.status, error: 'http_error' });
-      await relayError(res, upstream);
-      return;
-    }
-    if (effective.stream) {
-      let usage = null;
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-      await translateAnthropicStreamToResponses(upstream.body, body.model, (event, data) => {
-        if (event === 'response.completed' && data?.response) {
-          const u = extractUsage(data.response);
-          if (u) usage = u;
-        }
-        res.write(sseEncode(event, data));
-      });
-      res.end();
-      compression?.tracker?.record({ endpoint: route.endpoint, ok: true, status: upstream.status, usage });
-    } else {
-      const message = await upstream.json();
-      const usage = extractUsage(message);
-      if (replay) {
-        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-        replayResponsesAsSse(anthropicToResponsesObject(message, body.model), (event, data) => res.write(sseEncode(event, data)));
-        res.end();
-        compression?.tracker?.record({ endpoint: route.endpoint, ok: true, status: upstream.status, usage });
-      } else {
-        sendJson(res, upstream.status, anthropicToResponsesObject(message, body.model));
-        compression?.tracker?.record({ endpoint: route.endpoint, ok: true, status: upstream.status, usage });
-      }
-    }
+    await forwardMessagesRoute(res, effective, route, config, fetchImpl, body.model, {
+      replay,
+      tracker: compression?.tracker
+    });
     return;
   }
   let upgraded = maybeUpgradeModel(effective);
@@ -343,60 +316,201 @@ async function forward(res, body, route, config, fetchImpl, compression) {
 
 async function forwardChatRoute(res, body, route, config, fetchImpl, displayModel, options = {}) {
   const effective = options.replay ? { ...body, stream: false } : body;
-  const headers = {
-    'content-type': 'application/json',
-    authorization: `Bearer ${route.apiKey ?? config.apiKey}`
-  };
-  const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
   const requestBody = responsesToChatRequest(effective);
-  let upstream;
-  try {
-    upstream = await fetchImpl(route.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
-  } catch (error) {
-    options.tracker?.record({ endpoint: route.endpoint, ok: false, status: 502, error: 'network_error' });
-    sendJson(res, 502, { error: { message: error?.message || 'chat upstream failed' } });
+  const providers = routeProviders(route, config);
+  for (let index = 0; index < providers.length; index++) {
+    const provider = providers[index];
+    const last = index === providers.length - 1;
+    const headers = {
+      'content-type': 'application/json',
+      authorization: `Bearer ${provider.apiKey ?? config.apiKey}`
+    };
+    let upstream;
+    try {
+      upstream = await fetchImpl(provider.endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+        signal: requestSignal(config)
+      });
+    } catch (error) {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'network_error' });
+      logProtocolFallback(config, displayModel, 'chat', provider, providers[index + 1], 'network_error');
+      if (!last) continue;
+      sendJson(res, 502, { error: { message: error?.message || 'chat upstream failed' } });
+      return;
+    }
+    if (!upstream.ok) {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: upstream.status, error: 'http_error' });
+      logProtocolFallback(config, displayModel, 'chat', provider, providers[index + 1], 'http_error', upstream.status);
+      if (!last) continue;
+      await relayError(res, upstream);
+      return;
+    }
+    if (effective.stream) {
+      let usage = null;
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => {
+        if (event === 'response.completed' && data?.response) {
+          const u = extractUsage(data.response);
+          if (u) usage = u;
+        }
+        res.write(sseEncode(event, data));
+      });
+      res.end();
+      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
+      return;
+    }
+    let chat;
+    try {
+      chat = await upstream.json();
+    } catch {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'invalid_json' });
+      logProtocolFallback(config, displayModel, 'chat', provider, providers[index + 1], 'invalid_json');
+      if (!last) continue;
+      sendJson(res, 502, { error: { message: 'chat upstream returned invalid JSON' } });
+      return;
+    }
+    const usage = extractUsage(chat);
+    if (options.replay) {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      replayResponsesAsSse(chatToResponsesObject(chat, displayModel), (event, data) => res.write(sseEncode(event, data)));
+      res.end();
+      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
+      return;
+    }
+    sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
+    options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
     return;
   }
-  if (!upstream.ok) {
-    options.tracker?.record({ endpoint: route.endpoint, ok: false, status: upstream.status, error: 'http_error' });
-    await relayError(res, upstream);
-    return;
-  }
-  if (effective.stream) {
-    let usage = null;
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => {
-      if (event === 'response.completed' && data?.response) {
-        const u = extractUsage(data.response);
-        if (u) usage = u;
-      }
-      res.write(sseEncode(event, data));
-    });
-    res.end();
-    options.tracker?.record({ endpoint: route.endpoint, ok: true, status: upstream.status, usage });
-    return;
-  }
-  const chat = await upstream.json();
-  const usage = extractUsage(chat);
-  if (options.replay) {
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    replayResponsesAsSse(chatToResponsesObject(chat, displayModel), (event, data) => res.write(sseEncode(event, data)));
-    res.end();
-    options.tracker?.record({ endpoint: route.endpoint, ok: true, status: upstream.status, usage });
-    return;
-  }
-  sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
-  options.tracker?.record({ endpoint: route.endpoint, ok: true, status: upstream.status, usage });
 }
 
 async function readJson(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
-  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  const text = Buffer.concat(chunks).toString('utf8');
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new RequestValidationError('invalid JSON request body');
+  }
 }
 
 async function readRawBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   return Buffer.concat(chunks).toString('utf8');
+}
+
+class RequestValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'RequestValidationError';
+  }
+}
+
+function validateResponsesRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new RequestValidationError('request body must be a JSON object');
+  }
+  if (typeof body.model !== 'string' || !body.model.trim()) {
+    throw new RequestValidationError('model must be a non-empty string');
+  }
+}
+
+function routeProviders(route, config) {
+  if (Array.isArray(route.providers) && route.providers.length) return route.providers;
+  return [
+    { endpoint: route.endpoint, apiKey: route.apiKey ?? config.apiKey },
+    ...(route.fallbackEndpoint
+      ? [{ endpoint: route.fallbackEndpoint, apiKey: route.fallbackApiKey ?? config.apiKey }]
+      : [])
+  ].filter((provider) => provider.endpoint);
+}
+
+function requestSignal(config) {
+  return AbortSignal.timeout(config.timeouts?.requestMs || 600000);
+}
+
+function logProtocolFallback(config, model, upstream, provider, nextProvider, reason, status) {
+  logEvent(config, {
+    event: 'provider_fallback',
+    model,
+    upstream,
+    reason,
+    primary_url: provider.endpoint,
+    ...(status ? { primary_status: status } : {}),
+    fallback_url: nextProvider?.endpoint ?? null
+  });
+}
+
+async function forwardMessagesRoute(res, body, route, config, fetchImpl, displayModel, options = {}) {
+  const requestBody = responsesToAnthropicRequest(body);
+  const providers = routeProviders(route, config);
+  for (let index = 0; index < providers.length; index++) {
+    const provider = providers[index];
+    const last = index === providers.length - 1;
+    const headers = {
+      'content-type': 'application/json',
+      'x-api-key': provider.apiKey ?? config.apiKey,
+      'anthropic-version': '2023-06-01'
+    };
+    let upstream;
+    try {
+      upstream = await fetchImpl(provider.endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+        signal: requestSignal(config)
+      });
+    } catch (error) {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'network_error' });
+      logProtocolFallback(config, displayModel, 'messages', provider, providers[index + 1], 'network_error');
+      if (!last) continue;
+      sendJson(res, 502, { error: { message: error?.message || 'messages upstream failed' } });
+      return;
+    }
+    if (!upstream.ok) {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: upstream.status, error: 'http_error' });
+      logProtocolFallback(config, displayModel, 'messages', provider, providers[index + 1], 'http_error', upstream.status);
+      if (!last) continue;
+      await relayError(res, upstream);
+      return;
+    }
+    if (body.stream) {
+      let usage = null;
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      await translateAnthropicStreamToResponses(upstream.body, displayModel, (event, data) => {
+        if (event === 'response.completed' && data?.response) {
+          const extracted = extractUsage(data.response);
+          if (extracted) usage = extracted;
+        }
+        res.write(sseEncode(event, data));
+      });
+      res.end();
+      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
+      return;
+    }
+    let message;
+    try {
+      message = await upstream.json();
+    } catch {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'invalid_json' });
+      logProtocolFallback(config, displayModel, 'messages', provider, providers[index + 1], 'invalid_json');
+      if (!last) continue;
+      sendJson(res, 502, { error: { message: 'messages upstream returned invalid JSON' } });
+      return;
+    }
+    const usage = extractUsage(message);
+    if (options.replay) {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      replayResponsesAsSse(anthropicToResponsesObject(message, displayModel), (event, data) => res.write(sseEncode(event, data)));
+      res.end();
+      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
+      return;
+    }
+    sendJson(res, upstream.status, anthropicToResponsesObject(message, displayModel));
+    options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
+    return;
+  }
 }

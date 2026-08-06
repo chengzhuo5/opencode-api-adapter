@@ -46,6 +46,34 @@ test('resolves per-model api key from its own env var', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('throws when a model or endpoint api key env is missing', () => {
+  const modelConfig = makeConfig({
+    models: {
+      'gpt-5.6-luna': {
+        upstream: 'responses',
+        endpoint: 'https://ergouapi.com/v1',
+        apiKeyEnv: 'MISSING_MODEL_KEY'
+      }
+    }
+  });
+  assert.throws(() => loadConfig({
+    configPath: modelConfig.file,
+    env: { OPENCODE_GO_API_KEY: 'global-key' }
+  }), /missing MISSING_MODEL_KEY.*model gpt-5\.6-luna/i);
+  rmSync(modelConfig.dir, { recursive: true, force: true });
+
+  const endpointConfig = makeConfig({
+    apiBaseUrl: [
+      { url: 'https://global-b/v1', apiKeyEnv: 'MISSING_ENDPOINT_KEY' }
+    ]
+  });
+  assert.throws(() => loadConfig({
+    configPath: endpointConfig.file,
+    env: { OPENCODE_GO_API_KEY: 'global-key' }
+  }), /missing MISSING_ENDPOINT_KEY.*apiBaseUrl/i);
+  rmSync(endpointConfig.dir, { recursive: true, force: true });
+});
+
 test('resolves per-endpoint api keys from endpoint objects', () => {
   const { dir, file } = makeConfig({
     apiBaseUrl: [{ url: 'https://global-b/v1', apiKeyEnv: 'GLOBAL_B_KEY' }],

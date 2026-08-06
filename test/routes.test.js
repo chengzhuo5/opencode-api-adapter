@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveRoute, UnknownModelError, listRoutedModels, matchModelPattern, getModelEntry } from '../src/routes.js';
+import {
+  resolveRoute,
+  UnknownModelError,
+  RouteConfigurationError,
+  listRoutedModels,
+  matchModelPattern,
+  getModelEntry
+} from '../src/routes.js';
 
 const config = { apiBaseUrl: 'https://opencode.ai/zen/go/v1', models: {} };
 
@@ -168,6 +175,53 @@ test('array endpoint objects carry their own api keys without global fallback', 
     { endpoint: 'https://ergou2/v1/responses', apiKey: 'ek' },
     { endpoint: 'https://ergou3/v1/responses', apiKey: 'ek-3' }
   ]);
+});
+
+test('normalizes trailing slashes and already-suffixed endpoint URLs', () => {
+  const trailing = resolveRoute({ apiBaseUrl: 'https://x/v1/', models: {} }, 'gpt-5.6-luna');
+  assert.equal(trailing.endpoint, 'https://x/v1/responses');
+
+  const full = resolveRoute({
+    apiBaseUrl: 'https://global/v1',
+    models: {
+      'gpt-5.6-luna': {
+        upstream: 'responses',
+        endpoint: 'https://x/v1/chat/completions'
+      }
+    }
+  }, 'gpt-5.6-luna');
+  assert.equal(full.endpoint, 'https://x/v1/responses');
+});
+
+test('keeps backup credentials for the same endpoint', () => {
+  const route = resolveRoute({
+    apiBaseUrl: null,
+    models: {
+      'gpt-5.6-luna': {
+        upstream: 'responses',
+        endpoint: [
+          { url: 'https://x/v1', apiKey: 'primary-key' },
+          { url: 'https://x/v1', apiKey: 'backup-key' }
+        ]
+      }
+    }
+  }, 'gpt-5.6-luna');
+  assert.deepEqual(route.providers, [
+    { endpoint: 'https://x/v1/responses', apiKey: 'primary-key' },
+    { endpoint: 'https://x/v1/responses', apiKey: 'backup-key' }
+  ]);
+});
+
+test('rejects invalid upstream values and missing providers', () => {
+  assert.throws(() => resolveRoute({
+    apiBaseUrl: 'https://x/v1',
+    models: { 'gpt-5.6-luna': { upstream: 'invalid' } }
+  }, 'gpt-5.6-luna'), RouteConfigurationError);
+
+  assert.throws(() => resolveRoute({
+    apiBaseUrl: null,
+    models: {}
+  }, 'gpt-5.6-luna'), RouteConfigurationError);
 });
 
 test('lists routed models', () => {

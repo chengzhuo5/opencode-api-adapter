@@ -6,6 +6,7 @@ import { parseSseEvent, sseEncode } from './sse.js';
 import { replayResponsesAsSse } from './translate/responsesReplay.js';
 import { logEvent } from './logger.js';
 import { extractUsage } from './usageLog.js';
+import { resolveProviders } from './routes.js';
 
 const unsupportedResponses = new Map();
 const unsupportedNotified = new Map();
@@ -79,9 +80,11 @@ async function isUnsupportedResponse(upstream) {
 
 /** 是否存在可用的全局 chat 兜底（apiBaseUrl 配置且非空）。 */
 function hasChatFallback(config) {
-  const base = config?.apiBaseUrl;
-  if (Array.isArray(base)) return base.some((b) => (typeof b === 'string' ? b : b?.url));
-  return Boolean(base);
+  return chatFallbackProviders(config).length > 0;
+}
+
+function chatFallbackProviders(config) {
+  return resolveProviders(config?.apiBaseUrl, 'chat/completions', config?.apiKey);
 }
 
 export function clearUnsupportedCache() {
@@ -266,7 +269,6 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
     providers = providers.slice(skip);
   }
   const requestBody = normalizeResponsesRequest(body);
-  const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
   for (let i = 0; i < providers.length; i++) {
     const provider = providers[i];
     const lastProvider = i === providers.length - 1;
@@ -316,7 +318,12 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
     const headers = { 'content-type': 'application/json', authorization: `Bearer ${provider.apiKey}` };
     let upstream;
     try {
-      upstream = await fetchImpl(provider.endpoint, { method: 'POST', headers, body: JSON.stringify(requestBody), signal });
+      upstream = await fetchImpl(provider.endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(config.timeouts?.requestMs || 600000)
+      });
     } catch {
       breaker?.recordFailure(breakerKey, permit.usedHalfOpenPermit);
       options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'network_error' });
@@ -396,78 +403,102 @@ export async function forwardWithFallback(res, body, route, config, fetchImpl, d
 }
 
 async function forwardChat(res, body, config, fetchImpl, displayModel, options = {}) {
-  if (!hasChatFallback(config)) {
+  const providers = chatFallbackProviders(config);
+  if (!providers.length) {
     sendJson(res, 502, { error: { message: `chat fallback not configured for ${displayModel}` } });
     return;
   }
   const chatBody = responsesToChatRequest(body);
-  const headers = { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` };
-  const signal = AbortSignal.timeout(config.timeouts?.requestMs || 600000);
-  const endpoint = `${config.apiBaseUrl}/chat/completions`;
-  let upstream;
-  try {
-    upstream = await fetchImpl(endpoint, { method: 'POST', headers, body: JSON.stringify(chatBody), signal });
-  } catch (error) {
-    options.tracker?.record({ endpoint, ok: false, status: 502, error: 'network_error' });
+  for (let index = 0; index < providers.length; index++) {
+    const provider = providers[index];
+    const last = index === providers.length - 1;
+    const headers = {
+      'content-type': 'application/json',
+      authorization: `Bearer ${provider.apiKey ?? config.apiKey}`
+    };
+    let upstream;
+    try {
+      upstream = await fetchImpl(provider.endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(chatBody),
+        signal: AbortSignal.timeout(config.timeouts?.requestMs || 600000)
+      });
+    } catch (error) {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'network_error' });
+      logEvent(config, {
+        event: 'api_fallback_result',
+        model: displayModel,
+        success: false,
+        status: 502,
+        fallback_endpoint: 'chat/completions',
+        fallback_url: provider.endpoint,
+        next_fallback_url: providers[index + 1]?.endpoint ?? null,
+        reason: 'network_error'
+      });
+      if (!last) continue;
+      sendJson(res, 502, { error: { message: error.message || 'chat fallback failed' } });
+      return;
+    }
+    if (!upstream.ok) {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: upstream.status, error: 'http_error' });
+      logEvent(config, {
+        event: 'api_fallback_result',
+        model: displayModel,
+        success: false,
+        status: upstream.status,
+        fallback_endpoint: 'chat/completions',
+        fallback_url: provider.endpoint,
+        next_fallback_url: providers[index + 1]?.endpoint ?? null,
+        reason: 'http_error'
+      });
+      if (!last) continue;
+      await relayError(res, upstream);
+      return;
+    }
     logEvent(config, {
       event: 'api_fallback_result',
       model: displayModel,
-      success: false,
-      status: 502,
-      fallback_endpoint: 'chat/completions',
-      fallback_url: endpoint,
-      reason: 'network_error'
-    });
-    sendJson(res, 502, { error: { message: error.message || 'chat fallback failed' } });
-    return;
-  }
-  if (!upstream.ok) {
-    options.tracker?.record({ endpoint, ok: false, status: upstream.status, error: 'http_error' });
-    logEvent(config, {
-      event: 'api_fallback_result',
-      model: displayModel,
-      success: false,
+      success: true,
       status: upstream.status,
       fallback_endpoint: 'chat/completions',
-      fallback_url: endpoint,
-      reason: 'http_error'
+      fallback_url: provider.endpoint
     });
-    await relayError(res, upstream);
+    if (body.stream) {
+      let usage = null;
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => {
+        if (event === 'response.completed' && data?.response) {
+          const u = extractUsage(data.response);
+          if (u) usage = u;
+        }
+        res.write(sseEncode(event, data));
+      });
+      res.end();
+      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
+      return;
+    }
+    let chat;
+    try {
+      chat = await upstream.json();
+    } catch {
+      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'invalid_json' });
+      if (!last) continue;
+      sendJson(res, 502, { error: { message: 'chat fallback returned invalid JSON' } });
+      return;
+    }
+    const usage = extractUsage(chat);
+    if (options.replay) {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
+      replayResponsesAsSse(chatToResponsesObject(chat, displayModel), (event, data) => res.write(sseEncode(event, data)));
+      res.end();
+      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
+      return;
+    }
+    sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
+    options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
     return;
   }
-  logEvent(config, {
-    event: 'api_fallback_result',
-    model: displayModel,
-    success: true,
-    status: upstream.status,
-    fallback_endpoint: 'chat/completions',
-    fallback_url: endpoint
-  });
-  if (body.stream) {
-    let usage = null;
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => {
-      if (event === 'response.completed' && data?.response) {
-        const u = extractUsage(data.response);
-        if (u) usage = u;
-      }
-      res.write(sseEncode(event, data));
-    });
-    res.end();
-    options.tracker?.record({ endpoint, ok: true, status: upstream.status, usage });
-    return;
-  }
-  const chat = await upstream.json();
-  const usage = extractUsage(chat);
-  if (options.replay) {
-    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-    replayResponsesAsSse(chatToResponsesObject(chat, displayModel), (event, data) => res.write(sseEncode(event, data)));
-    res.end();
-    options.tracker?.record({ endpoint, ok: true, status: upstream.status, usage });
-    return;
-  }
-  sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
-  options.tracker?.record({ endpoint, ok: true, status: upstream.status, usage });
 }
 
 const RESPONSE_STATUS_FOR_EVENT = {

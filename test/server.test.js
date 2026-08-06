@@ -196,6 +196,36 @@ test('unknown model returns 400', async () => {
   });
 });
 
+test('malformed JSON and missing model return 400', async () => {
+  await withServer({ apiKey: 'k', apiBaseUrl: 'https://x/v1', models: {} }, async () => {}, async (base) => {
+    const malformed = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{bad json'
+    });
+    assert.equal(malformed.status, 400);
+
+    const missing = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: [] })
+    });
+    assert.equal(missing.status, 400);
+  });
+});
+
+test('configured model without providers returns 503', async () => {
+  await withServer({ apiKey: 'k', apiBaseUrl: null, models: {} }, async () => {}, async (base) => {
+    const res = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-luna', input: [] })
+    });
+    assert.equal(res.status, 503);
+    assert.match((await res.json()).error.message, /no provider configured/i);
+  });
+});
+
 test('chat route falls back to chat completions when responses fails', async () => {
   const fetchImpl = async (url) => {
     if (url.endsWith('/responses')) {
@@ -257,6 +287,124 @@ test('messages route sends x-api-key header', async () => {
   });
   assert.equal(seenHeaders['x-api-key'], 'k');
   assert.equal(seenHeaders['anthropic-version'], '2023-06-01');
+});
+
+test('messages route uses the selected provider key', async () => {
+  let seenHeaders;
+  const fetchImpl = async (url, init) => {
+    seenHeaders = init.headers;
+    return new Response(JSON.stringify({
+      id: 'msg_1',
+      model: 'minimax-m3',
+      content: [{ type: 'text', text: 'ok' }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: 'https://global/v1',
+    models: {
+      'minimax-m3': {
+        upstream: 'messages',
+        endpoint: 'https://messages.test/v1',
+        apiKey: 'model-key'
+      }
+    }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'minimax-m3', stream: false, input: [] })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(seenHeaders['x-api-key'], 'model-key');
+});
+
+test('messages route fails over across configured providers', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes('messages-a')) {
+      return new Response(JSON.stringify({ error: { message: 'down' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'msg_1',
+      model: 'minimax-m3',
+      content: [{ type: 'text', text: 'ok' }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    models: {
+      'minimax-m3': {
+        upstream: 'messages',
+        endpoint: [
+          { url: 'https://messages-a/v1', apiKey: 'a-key' },
+          { url: 'https://messages-b/v1', apiKey: 'b-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'minimax-m3', stream: false, input: [] })
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).output[0].content[0].text, 'ok');
+  });
+  assert.deepEqual(calls, [
+    'https://messages-a/v1/messages',
+    'https://messages-b/v1/messages'
+  ]);
+});
+
+test('chat route fails over across configured providers', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes('chat-a')) {
+      return new Response(JSON.stringify({ error: { message: 'down' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'chatcmpl-1',
+      created: 1,
+      model: 'deepseek-v4-flash',
+      choices: [{ message: { role: 'assistant', content: 'ok' } }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'chat',
+        endpoint: [
+          { url: 'https://chat-a/v1', apiKey: 'a-key' },
+          { url: 'https://chat-b/v1', apiKey: 'b-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [] })
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).output[0].content[0].text, 'ok');
+  });
+  assert.deepEqual(calls, [
+    'https://chat-a/v1/chat/completions',
+    'https://chat-b/v1/chat/completions'
+  ]);
 });
 
 test('responses route relays upstream body', async () => {
@@ -539,4 +687,86 @@ test('normalizeResponsesRequest strips legacy item ids before forwarding', () =>
     ]
   });
   assert.equal(request.input.some((item) => Object.hasOwn(item, 'id')), false);
+});
+
+test('history truncation drops orphan tool_search outputs', async () => {
+  let forwarded;
+  const fetchImpl = async (url, init) => {
+    forwarded = JSON.parse(init.body);
+    return new Response(JSON.stringify({ id: 'resp_1', object: 'response' }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  const input = [
+    {
+      type: 'tool_search_call',
+      call_id: 'call_search',
+      status: 'completed',
+      execution: 'client',
+      arguments: { query: 'code graph' }
+    },
+    {
+      type: 'tool_search_output',
+      call_id: 'call_search',
+      status: 'completed',
+      execution: 'client',
+      tools: []
+    },
+    ...Array.from({ length: 9 }, (_, index) => ({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: `message-${index}` }]
+    }))
+  ];
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: null,
+    models: {
+      'gpt-5.6-sol': {
+        upstream: 'responses',
+        endpoint: 'https://ergou.test/v1',
+        apiKey: 'ergou-key',
+        maxHistoryMessages: 10
+      }
+    }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-sol', stream: false, input })
+    });
+    assert.equal(res.status, 200);
+  });
+  assert.equal(
+    forwarded.input.some((item) => item.type === 'tool_search_output'),
+    false,
+    'truncation must not leave a tool_search_output without its matching call'
+  );
+});
+
+test('normalizeResponsesRequest preserves paired tool_search items', () => {
+  const request = normalizeResponsesRequest({
+    model: 'gpt-5.6-sol',
+    input: [
+      {
+        type: 'tool_search_call',
+        call_id: 'call_search',
+        status: 'completed',
+        execution: 'client',
+        arguments: { query: 'code graph' }
+      },
+      {
+        type: 'tool_search_output',
+        call_id: 'call_search',
+        status: 'completed',
+        execution: 'client',
+        tools: []
+      }
+    ]
+  });
+  assert.deepEqual(request.input.map((item) => item.type), [
+    'tool_search_call',
+    'tool_search_output'
+  ]);
 });

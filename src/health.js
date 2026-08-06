@@ -1,4 +1,5 @@
 import { logEvent } from './logger.js';
+import { resolveRoute } from './routes.js';
 
 /**
  * 模型健康监控：定期探测指定 provider 是否可用。
@@ -20,29 +21,26 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
   const collect = () => {
     const targets = [];
     const explicit = Array.isArray(hc.models) ? hc.models : null;
-    if (explicit) {
-      for (const model of explicit) {
-        const entry = config.models?.[model];
-        if (!entry) continue;
-        for (const p of toProviders(entry)) targets.push({ model, ...p });
+    const models = explicit || Object.entries(config.models || {})
+      .filter(([, entry]) => entry && Array.isArray(entry.endpoint))
+      .map(([model]) => model);
+    for (const model of models) {
+      let route;
+      try {
+        route = resolveRoute(config, model);
+      } catch {
+        continue;
       }
-      return targets;
-    }
-    for (const [model, entry] of Object.entries(config.models || {})) {
-      if (!entry || !Array.isArray(entry.endpoint)) continue;
-      for (const p of toProviders(entry)) targets.push({ model, ...p });
+      for (const provider of route.providers || []) {
+        targets.push({
+          model,
+          upstream: route.upstream,
+          endpoint: provider.endpoint,
+          apiKey: provider.apiKey
+        });
+      }
     }
     return targets;
-  };
-
-  const toProviders = (entry) => {
-    const bases = Array.isArray(entry.endpoint) ? entry.endpoint : [entry.endpoint];
-    return bases.filter((b) => b).map((b) => {
-      if (typeof b === 'object') {
-        return { endpoint: `${b.url}/responses`, apiKey: b.apiKey };
-      }
-      return { endpoint: `${b}/responses`, apiKey: entry.apiKey };
-    });
   };
 
   const refreshWatched = () => {
@@ -59,17 +57,16 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
     if (!target) return;
     let healthy = false;
     try {
+      const probe = buildProbeRequest(target);
       const res = await fetchImpl(target.endpoint, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${target.apiKey}` },
-        body: JSON.stringify({
-          model: target.model,
-          stream: true,
-          input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ok' }] }]
-        }),
+        headers: probe.headers,
+        body: JSON.stringify(probe.body),
         signal: AbortSignal.timeout(timeoutMs)
       });
-      if (res.ok && res.headers.get('content-type')?.includes('text/event-stream')) {
+      if (target.upstream === 'responses'
+        && res.ok
+        && res.headers.get('content-type')?.includes('text/event-stream')) {
         const text = await res.text();
         healthy = text.includes('response.completed');
       } else if (res.ok) {
@@ -95,9 +92,10 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
 
   async function probeAll() {
     refreshWatched();
-    const results = [];
-    for (const key of watched.keys()) results.push({ key, healthy: await probe(key) });
-    return results;
+    return Promise.all([...watched.keys()].map(async (key) => ({
+      key,
+      healthy: await probe(key)
+    })));
   }
 
   let timer = null;
@@ -128,5 +126,49 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
     start,
     stop,
     watchedCount: () => watched.size
+  };
+}
+
+function buildProbeRequest(target) {
+  if (target.upstream === 'messages') {
+    return {
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': target.apiKey,
+        'anthropic-version': '2023-06-01'
+      },
+      body: {
+        model: target.model,
+        max_tokens: 1,
+        stream: false,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'ok' }] }]
+      }
+    };
+  }
+  if (target.upstream === 'chat') {
+    return {
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${target.apiKey}`
+      },
+      body: {
+        model: target.model,
+        stream: false,
+        max_tokens: 1,
+        messages: [{ role: 'user', content: 'ok' }]
+      }
+    };
+  }
+  return {
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${target.apiKey}`
+    },
+    body: {
+      model: target.model,
+      stream: true,
+      max_output_tokens: 1,
+      input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ok' }] }]
+    }
   };
 }

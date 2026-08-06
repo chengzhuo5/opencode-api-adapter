@@ -92,14 +92,14 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 ```
 
 - 优先级：精确 `models` 条目 > `modelPatterns` 通配（多个通配命中时取更长的模式）> 默认路由。
-- `endpoint`：自定义服务商的 base URL（路由会自动拼接 `/responses` 或 `/messages`）
-- `apiKeyEnv`：该服务商 API key 对应的环境变量名；不设置则复用全局 `apiKeyEnv`
+- `endpoint`：自定义服务商的 base URL（路由按协议自动拼接 `/responses`、`/chat/completions` 或 `/messages`）；尾斜杠和已带协议后缀的完整 URL 会统一规范化，避免重复路径
+- `apiKeyEnv`：该服务商 API key 对应的环境变量名；不设置则复用全局 `apiKeyEnv`。显式声明但环境变量缺失时启动立即失败，不会静默发送空 key
 - `maxHistoryMessages`：可选，转发前只保留最近 N 条消息（自定义服务商上下文窗口较小时使用，如 ergou 的 luna）；默认不截断
 - `contextWindow`：可选，覆盖该模型在 catalog 中声明的上下文窗口（Codex 用它决定何时压缩）。ergou 的 GPT 系列实际窗口为 353K，已内置为默认值
 - 优先级：自定义服务商（存在时独占）→ `apiBaseUrl`（仅未配置自定义端点的模型）→ 协议降级（chat/completions，仅当 `apiBaseUrl` 存在时可用；`apiBaseUrl` 可设为 `null` 彻底关闭全局兜底）
 - “模型不支持”记忆：仅当上游明确返回模型不存在/不支持（如 `Model x is not supported`）时才按 `model::provider` 短暂记忆（5 分钟 TTL）；鉴权失败（401）、5xx、网络错误等瞬时故障不会污染路由，同一模型的其他 provider 也不受影响
 
-`endpoint` 和全局 `apiBaseUrl` 都支持**字符串或数组**：数组时按顺序逐个尝试，第一个成功响应的生效。每个元素可以是字符串（用模型/全局默认 key）或对象 `{ "url": "...", "apiKeyEnv": "..." }`（为该端点指定独立 key）：
+`endpoint` 和全局 `apiBaseUrl` 都支持**字符串或数组**：Responses、Chat Completions、Anthropic Messages 三种上游都会按顺序逐个尝试，第一个成功响应的生效；每次尝试使用独立超时。每个元素可以是字符串（用模型/全局默认 key）或对象 `{ "url": "...", "apiKeyEnv": "..." }`（为该端点指定独立 key）：
 
 ```json
 {
@@ -141,7 +141,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 两层机制互补：
 
-- `healthCheck`：每 `intervalMs` 主动发一次流式探针，探测失败的 provider 被排到末尾，恢复后自动切回（日志事件 `provider_health`）。
+- `healthCheck`：每 `intervalMs` 并行发送与上游协议匹配的探针（Responses/Chat/Messages 使用各自路径、请求体和鉴权头）；探测失败的 provider 被排到末尾，恢复后自动切回（日志事件 `provider_health`）。
 - `circuitBreaker`：默认关闭（`enabled: false`），需要时开启。由真实请求成败驱动，按 `model::endpoint` 独立统计。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
 
 ### 请求日志与用量统计
