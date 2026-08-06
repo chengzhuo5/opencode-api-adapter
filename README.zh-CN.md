@@ -157,7 +157,8 @@ opencode-api-adapter --config "C:\path\to\config.json"
 {
   "usageLog": {
     "enabled": true,
-    "file": "usage/requests.jsonl"
+    "file": "usage/requests.jsonl",
+    "flushDelayMs": 10
   }
 }
 ```
@@ -165,6 +166,8 @@ opencode-api-adapter --config "C:\path\to\config.json"
 启用后，每次 `/v1/responses` 请求会追加一行 JSON 到日志文件：时间、模型、实际使用的 provider、HTTP 状态、成功与否、输入/输出/cache hit/cache miss/cache write token、费用估算、总延迟、是否流式、错误信息。兼容 DeepSeek 原生 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`、OpenAI cached token details 与 Anthropic cache read/write 字段；上游未返回的维度记为 `null`，不会把“未知”统计成 0。旧的 `cache_read_tokens` / `cache_creation_tokens` 继续作为兼容别名。
 
 日志还包含本地 HMAC 生成的 `conversation_key_hash`、`model_visible_prefix_hash`、`tool_schema_hash`、`provider_endpoint_hash` 以及 route/translator 版本，用于定位发布后的缓存命中变化；不会记录完整 Prompt、API key、图片或原始工具输出。
+
+启动时 JSONL 只读取一次；新记录立即进入内存统计，并在 `flushDelayMs` 后异步批量追加到磁盘。相同过滤条件的聚合结果按日志版本缓存，管理页轮询不会反复同步读取和解析完整文件；热重启/优雅停止会先 flush 未落盘记录。
 
 查询统计：
 

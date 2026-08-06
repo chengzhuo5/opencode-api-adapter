@@ -1,4 +1,5 @@
-import { appendFileSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
@@ -143,15 +144,78 @@ export function createUsageLogger(config = {}) {
   if (!uc.enabled || !uc.file) return null;
   const file = path.resolve(uc.file);
   mkdirSync(path.dirname(file), { recursive: true });
+  const entries = readUsageLines(file);
+  const aggregateCache = new Map();
+  const flushDelayMs = Number.isFinite(uc.flushDelayMs) && uc.flushDelayMs >= 0
+    ? uc.flushDelayMs
+    : 10;
+  let pending = [];
+  let flushTimer = null;
+  let writeChain = Promise.resolve();
+  let closed = false;
+
+  function drainPending() {
+    if (!pending.length) return writeChain;
+    const batch = pending;
+    pending = [];
+    const text = batch.join('');
+    writeChain = writeChain
+      .then(() => appendFile(file, text, 'utf8'))
+      .catch(() => {
+        // 日志失败不能影响路由主流程；后续 batch 仍继续尝试写入。
+      });
+    return writeChain;
+  }
+
+  function scheduleFlush() {
+    if (flushTimer || closed) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = null;
+      drainPending();
+    }, flushDelayMs);
+    flushTimer.unref?.();
+  }
+
+  async function flush() {
+    while (true) {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      drainPending();
+      const observedChain = writeChain;
+      await observedChain;
+      if (!pending.length && observedChain === writeChain) break;
+    }
+  }
+
   return {
     file,
     log(entry) {
-      if (!entry) return;
-      try {
-        appendFileSync(file, JSON.stringify(entry) + '\n', 'utf8');
-      } catch {
-        // 日志失败不能影响路由主流程
-      }
+      if (!entry || closed) return;
+      entries.push(entry);
+      aggregateCache.clear();
+      pending.push(JSON.stringify(entry) + '\n');
+      scheduleFlush();
+    },
+    aggregate(filters = {}) {
+      const timeBucket = filters.days ? Math.floor(Date.now() / 60_000) : 0;
+      const key = JSON.stringify({
+        model: filters.model || null,
+        endpoint: filters.endpoint || null,
+        days: filters.days || 0,
+        timeBucket
+      });
+      const cached = aggregateCache.get(key);
+      if (cached) return cached;
+      const stats = aggregateUsage(entries, filters);
+      aggregateCache.set(key, stats);
+      return stats;
+    },
+    flush,
+    async close() {
+      await flush();
+      closed = true;
     }
   };
 }

@@ -39,7 +39,8 @@
   },
   "usageLog": {
     "enabled": true,
-    "file": "usage/requests.jsonl"
+    "file": "usage/requests.jsonl",
+    "flushDelayMs": 10
   },
   "providerStickiness": {
     "enabled": true,

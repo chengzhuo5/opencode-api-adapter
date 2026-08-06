@@ -156,7 +156,8 @@ The layers complement each other:
 {
   "usageLog": {
     "enabled": true,
-    "file": "usage/requests.jsonl"
+    "file": "usage/requests.jsonl",
+    "flushDelayMs": 10
   }
 }
 ```
@@ -164,6 +165,8 @@ The layers complement each other:
 Each `/v1/responses` request appends one JSON line containing timestamp, model, provider, status, success, input/output/cache-hit/cache-miss/cache-write tokens, estimated cost, latency, streaming flag, and error. DeepSeek `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`, OpenAI cached-token details, and Anthropic cache read/write fields are supported. Missing dimensions remain `null` instead of being counted as zero; legacy `cache_read_tokens` / `cache_creation_tokens` remain as aliases.
 
 The log also contains local-HMAC `conversation_key_hash`, `model_visible_prefix_hash`, `tool_schema_hash`, and `provider_endpoint_hash` values plus route/translator versions. It never stores full prompts, API keys, images, or raw tool output.
+
+The JSONL file is loaded once at startup. New records become visible to in-memory stats immediately and are appended to disk in asynchronous batches after `flushDelayMs`. Aggregates are version-cached, so admin polling no longer synchronously rereads and reparses the whole file; hot reload and graceful shutdown flush pending records.
 
 Query the stats:
 

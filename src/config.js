@@ -26,7 +26,8 @@ export const DEFAULT_CONFIG = {
   },
   usageLog: {
     enabled: false,
-    file: 'usage/requests.jsonl'
+    file: 'usage/requests.jsonl',
+    flushDelayMs: 10
   },
   providerStickiness: {
     enabled: true,

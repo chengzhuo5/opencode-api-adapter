@@ -120,5 +120,6 @@ test('loads usageLog defaults and merges overrides', () => {
   const cfg = loadConfig({ configPath: file, env: { OPENCODE_GO_API_KEY: 'k' } });
   assert.equal(cfg.usageLog.enabled, false);
   assert.equal(cfg.usageLog.file, 'x/y.jsonl');
+  assert.equal(cfg.usageLog.flushDelayMs, 10);
   rmSync(dir, { recursive: true, force: true });
 });

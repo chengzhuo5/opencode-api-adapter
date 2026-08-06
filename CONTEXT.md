@@ -47,3 +47,7 @@ _Avoid_: prompt logging, trace payload
 **Compression Checkpoint**:
 A content-addressed, disk-persisted compressed tool output reused byte-for-byte across turns, concurrent requests, cache eviction, and process restart.
 _Avoid_: regenerated summary, transient compression
+
+**Usage Store**:
+The in-memory request-usage snapshot with versioned aggregate caching and asynchronous batched JSONL persistence.
+_Avoid_: per-poll file scan, synchronous request logging

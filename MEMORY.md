@@ -197,6 +197,25 @@ conversation/prefix/tool/provider 四类 HMAC 指纹齐全、`ok:true / error:nu
 11 项 tool_search 截断边界请求 200 completed。最近的 `stream_interrupted` 仍是部署前
 `2026-08-06T04:54:12.493Z` 的旧记录，新版本未新增。
 
+## 2026-08-06：Usage Store 移出事件循环同步 I/O 热路径
+
+**基线**：`usage/requests.jsonl` 为 751,399 bytes / 2,775 行。旧实现每次
+`/api/status` 或 `/v1/usage` 都 `readFileSync + split + JSON.parse + aggregate`：
+40 次本地读盘聚合中位 5.92 ms、p95 10.73 ms；线上 `/api/status` 20 次中位
+11.52 ms、p95 49.04 ms。管理页每 3 秒轮询会持续阻塞 Node 事件循环，且日志越大越慢。
+
+**修复**：
+
+1. `createUsageLogger` 启动时只加载 JSONL 一次；`log()` 先写内存快照，统计立即可见，
+   不再在请求 finalize 热路径调用 `appendFileSync`。
+2. JSONL 以 `usageLog.flushDelayMs`（默认 10 ms）异步批量 append；`flush()` 覆盖写入
+   期间新到的记录，热重启/优雅停止先停止接收请求，再 flush，避免尾记录丢失。
+3. `/api/status` 与 `/v1/usage` 改用内存聚合；相同 filter + 分钟时间桶按日志版本缓存，
+   新记录自动失效缓存。当前文件首次聚合约 6.90 ms，随后 1,000 次缓存聚合中位
+   0.0005 ms、p95 0.0012 ms。
+4. 新增即时可见、异步持久化、显式 flush、聚合对象复用和写入失效回归。全套
+   217/217、smoke 200/200、pack dry-run 通过。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

@@ -72,11 +72,11 @@ export async function startRouter({
     if (!server) return;
     const s = server;
     server = null;
-    try { s.__routerCleanup?.(); } catch { /* noop */ }
     await new Promise((resolve) => {
       s.close(() => resolve());
       s.closeAllConnections?.();
     });
+    try { await s.__routerCleanup?.(); } catch { /* noop */ }
   }
 
   async function restartServer() {

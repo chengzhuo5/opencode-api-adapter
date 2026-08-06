@@ -9,7 +9,7 @@ import { maybeCompressInput, loadOutput } from './compression.js';
 import { createLeanCtxClient } from './leanCtxClient.js';
 import { createHealthMonitor } from './health.js';
 import { createCircuitBreaker } from './circuitBreaker.js';
-import { createUsageLogger, createRequestTracker, readUsageLines, aggregateUsage } from './usageLog.js';
+import { createUsageLogger, createRequestTracker } from './usageLog.js';
 import { createCodexManager } from './codexConfig.js';
 import { createProviderAffinity } from './providerAffinity.js';
 import { createCacheDiagnostics } from './cacheDiagnostics.js';
@@ -83,7 +83,7 @@ export function createRouter(config, {
           return;
         }
         const days = Math.max(1, Number.parseInt(url.searchParams.get('days') || '7', 10) || 7);
-        const stats = aggregateUsage(readUsageLines(usageLogger.file), {
+        const stats = usageLogger.aggregate({
           model: url.searchParams.get('model') || undefined,
           endpoint: url.searchParams.get('provider') || undefined,
           days
@@ -116,7 +116,7 @@ export function createRouter(config, {
           health: health ? health.status() : [],
           circuit: breaker ? breaker.statuses() : [],
           usage: usageLogger
-            ? aggregateUsage(readUsageLines(usageLogger.file), { days: 7 })
+            ? usageLogger.aggregate({ days: 7 })
             : { enabled: false }
         });
         return;
@@ -240,7 +240,11 @@ export function createRouter(config, {
       else sendJson(res, 500, { error: { message: error.message || 'internal error' } });
     }
   });
-  server.__routerCleanup = () => { health?.stop(); };
+  server.__routerFlushUsage = () => usageLogger?.flush() ?? Promise.resolve();
+  server.__routerCleanup = async () => {
+    health?.stop();
+    await usageLogger?.close();
+  };
   return server;
 }
 

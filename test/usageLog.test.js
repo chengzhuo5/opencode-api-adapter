@@ -188,15 +188,35 @@ test('request tracker joins compression checkpoint metadata with actual usage co
   assert.equal(entry.estimated_cache_savings_usd, 0.00072);
 });
 
-test('usage logger writes JSONL and reads it back', () => {
+test('usage logger keeps new entries immediately visible and flushes JSONL asynchronously', async () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-log-'));
   const file = path.join(dir, 'requests.jsonl');
   const logger = createUsageLogger({ usageLog: { enabled: true, file } });
   logger.log({ ts: '2026-08-05T00:00:00.000Z', model: 'gpt-5.6-luna', ok: true });
   logger.log({ ts: '2026-08-05T00:00:01.000Z', model: 'gpt-5.6-luna', ok: false });
+  const immediate = logger.aggregate({ days: 0 });
+  assert.equal(immediate.totalRequests, 2, 'in-memory stats must not wait for disk persistence');
+  await logger.flush();
   const lines = readUsageLines(file);
   assert.equal(lines.length, 2);
   assert.equal(lines[1].ok, false);
+  await logger.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('usage logger caches aggregates until a new entry invalidates them', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-cache-'));
+  const file = path.join(dir, 'requests.jsonl');
+  const logger = createUsageLogger({ usageLog: { enabled: true, file } });
+  logger.log({ ts: new Date().toISOString(), model: 'x', endpoint: 'https://x', ok: true });
+  const first = logger.aggregate({ days: 7 });
+  const cached = logger.aggregate({ days: 7 });
+  assert.equal(cached, first, 'same version and filter should reuse the aggregate object');
+  logger.log({ ts: new Date().toISOString(), model: 'x', endpoint: 'https://x', ok: true });
+  const invalidated = logger.aggregate({ days: 7 });
+  assert.notEqual(invalidated, first);
+  assert.equal(invalidated.totalRequests, 2);
+  await logger.close();
   rmSync(dir, { recursive: true, force: true });
 });
 

@@ -12,8 +12,9 @@ async function withServer(config, fetchImpl, fn, options = {}) {
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   try {
-    await fn(`http://127.0.0.1:${server.address().port}`);
+    await fn(`http://127.0.0.1:${server.address().port}`, server);
   } finally {
+    await server.__routerCleanup?.();
     server.close();
   }
 }
@@ -74,7 +75,7 @@ test('usage endpoint reports logged request', async () => {
     apiBaseUrl: 'https://x/v1',
     models: {},
     usageLog: { enabled: true, file }
-  }, fetchImpl, async (base) => {
+  }, fetchImpl, async (base, server) => {
     const res = await fetch(base + '/v1/responses', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -90,6 +91,7 @@ test('usage endpoint reports logged request', async () => {
       })
     });
     assert.equal(res.status, 200);
+    await server.__routerFlushUsage();
     const rawLog = readFileSync(file, 'utf8');
     const entry = JSON.parse(rawLog.trim());
     assert.match(entry.conversation_key_hash, /^[a-f0-9]{64}$/);
