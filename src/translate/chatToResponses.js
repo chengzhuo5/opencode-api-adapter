@@ -213,7 +213,7 @@ export async function translateChatStreamToResponses(body, requestModel, writeEv
     response.status = 'failed';
     response.error = { code: 'upstream_error', message: (error?.message || 'stream failed').slice(0, 200) };
     writeEvent('response.failed', { type: 'response.failed', response });
-    return;
+    return false;
   }
 
   if (messageItem) {
@@ -258,4 +258,5 @@ export async function translateChatStreamToResponses(body, requestModel, writeEv
 
   response.status = 'completed';
   writeEvent('response.completed', { type: 'response.completed', response });
+  return true;
 }

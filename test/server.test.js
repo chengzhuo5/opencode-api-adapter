@@ -363,6 +363,59 @@ test('messages route fails over across configured providers', async () => {
   ]);
 });
 
+test('messages route skips a provider opened by the shared circuit breaker', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes('messages-a')) {
+      return new Response(JSON.stringify({ error: { message: 'down' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'msg_1',
+      model: 'minimax-m3',
+      content: [{ type: 'text', text: 'ok' }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    circuitBreaker: {
+      enabled: true,
+      failureThreshold: 1,
+      successThreshold: 1,
+      timeoutMs: 60_000,
+      errorRateThreshold: 1,
+      minRequests: 100
+    },
+    models: {
+      'minimax-m3': {
+        upstream: 'messages',
+        endpoint: [
+          { url: 'https://messages-a/v1', apiKey: 'a-key' },
+          { url: 'https://messages-b/v1', apiKey: 'b-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(`${base}/v1/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'minimax-m3', stream: false, input: [] })
+      });
+      assert.equal(res.status, 200);
+    }
+  });
+  assert.deepEqual(calls, [
+    'https://messages-a/v1/messages',
+    'https://messages-b/v1/messages',
+    'https://messages-b/v1/messages'
+  ]);
+});
+
 test('chat route fails over across configured providers', async () => {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -405,6 +458,148 @@ test('chat route fails over across configured providers', async () => {
     'https://chat-a/v1/chat/completions',
     'https://chat-b/v1/chat/completions'
   ]);
+});
+
+test('provider failover cancels the discarded upstream response body', async () => {
+  let cancelled = 0;
+  const fetchImpl = async (url) => {
+    if (url.includes('chat-a')) {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('temporary failure'));
+        },
+        cancel() {
+          cancelled += 1;
+        }
+      }), { status: 503, headers: { 'content-type': 'text/plain' } });
+    }
+    return new Response(JSON.stringify({
+      id: 'chatcmpl-1',
+      created: 1,
+      model: 'deepseek-v4-flash',
+      choices: [{ message: { role: 'assistant', content: 'ok' } }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'chat',
+        endpoint: [
+          { url: 'https://chat-a/v1', apiKey: 'a-key' },
+          { url: 'https://chat-b/v1', apiKey: 'b-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    const res = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [] })
+    });
+    assert.equal(res.status, 200);
+  });
+
+  assert.equal(cancelled, 1);
+});
+
+test('chat route skips a provider opened by the shared circuit breaker', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes('chat-a')) {
+      return new Response(JSON.stringify({ error: { message: 'down' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'chatcmpl-1',
+      created: 1,
+      model: 'deepseek-v4-flash',
+      choices: [{ message: { role: 'assistant', content: 'ok' } }]
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+  };
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    circuitBreaker: {
+      enabled: true,
+      failureThreshold: 1,
+      successThreshold: 1,
+      timeoutMs: 60_000,
+      errorRateThreshold: 1,
+      minRequests: 100
+    },
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'chat',
+        endpoint: [
+          { url: 'https://chat-a/v1', apiKey: 'a-key' },
+          { url: 'https://chat-b/v1', apiKey: 'b-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(`${base}/v1/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'deepseek-v4-flash', stream: false, input: [] })
+      });
+      assert.equal(res.status, 200);
+    }
+  });
+  assert.deepEqual(calls, [
+    'https://chat-a/v1/chat/completions',
+    'https://chat-b/v1/chat/completions',
+    'https://chat-b/v1/chat/completions'
+  ]);
+});
+
+test('chat stream failure is recorded as a failed provider attempt', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'chat-stream-usage-'));
+  const file = path.join(dir, 'requests.jsonl');
+  const fetchImpl = async () => new Response(new ReadableStream({
+    start(controller) {
+      const encoder = new TextEncoder();
+      controller.enqueue(encoder.encode(
+        'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+      ));
+      controller.error(new Error('chat stream broke'));
+    }
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+
+  try {
+    await withServer({
+      apiKey: 'global-key',
+      apiBaseUrl: null,
+      usageLog: { enabled: true, file },
+      models: {
+        'deepseek-v4-flash': {
+          upstream: 'chat',
+          endpoint: 'https://chat.test/v1',
+          apiKey: 'chat-key'
+        }
+      }
+    }, fetchImpl, async (base) => {
+      const res = await fetch(`${base}/v1/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'deepseek-v4-flash', stream: true, input: [] })
+      });
+      assert.equal(res.status, 200);
+      assert.match(await res.text(), /event: response\.failed/);
+
+      const stats = await fetch(`${base}/v1/usage?days=7`).then((response) => response.json());
+      assert.equal(stats.totalRequests, 1);
+      assert.equal(stats.successRate, 0);
+    });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('responses route relays upstream body', async () => {

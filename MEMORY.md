@@ -108,6 +108,42 @@ failover、usage、错误映射与流/非流响应政策。上一轮三协议行
 统一 stream lifecycle、保护控制面并修复桌面资源版本迁移。可视化评审报告生成在系统
 临时目录 `architecture-review-20260806-131500.html`，不进入仓库。
 
+## 2026-08-06：Provider Execution deep module（第一阶段完成）
+
+**结构重构**：新增 `src/providerExecution.js`，对 Router 暴露单一 `forwardRoute`
+Interface；Responses、Chat Completions、Anthropic Messages 都从这里进入。Module 内部
+保留一个 Responses 执行路径（含 unsupported TTL、file_id、stream retry、Chat
+Fallback）和一个 Chat/Messages 共用的 Protocol Adapter 路径。原来散落在
+`server.js`、`fallback.js` 的 4 套 provider loop 已收敛；`server.js` 从 516 行降到
+344 行，`fallback.js` 从 815 行降到 468 行，后者只保留 Request Preparation 与
+Responses stream relay。
+
+**同时修复的确定性问题**：
+
+1. 显式启用 circuit breaker 时，Chat/Messages 过去完全绕过 breaker；现三协议统一
+   allow/recordSuccess/recordFailure，第二次请求会跳过已 open 的 provider。默认
+   `circuitBreaker.enabled=false` 未改变。
+2. Chat/Anthropic stream translator 遇到上游断流会发 `response.failed`，但过去调用方
+   仍把 provider 和 usage 记为成功。translator 现返回明确 boolean；失败流记录
+   `ok:false / stream_interrupted`，也不会错误重置 breaker。
+3. failover 过去直接丢下非最终 provider 的 HTTP error body，真实连接池可能积累未释放
+   body。现切换下一个 Provider 或转 Chat Fallback 前主动 cancel 被丢弃的响应体。
+4. 迁移时曾误删 stream non-streaming retry 对 `normalizeResponsesRequest` 的依赖，
+   tracer test 立即复现为只有 `response.failed`、没有 completed；已恢复依赖并保持回归。
+
+**验证**：全套 196/196；smoke 200/200；GPT→DeepSeek→GPT→DeepSeek 与反向四跳 mock
+均通过；`npm pack --dry-run` 确认新 Module 进入发布包；语法与 `git diff --check`
+通过。此次不改变 Request Preparation 顺序、请求体内容、KV Cache 前缀、
+`compress.enabled=false` 或默认 breaker 配置。
+
+**独立缓存安全审阅对齐**：工作区出现用户/其他会话生成但未跟踪的
+`docs/superpowers/specs/2026-08-06-deepseek-cache-safe-router-recommendations.md`，
+本次只读核对、未修改未提交。其 P1 要求 Provider Execution 只接收 immutable
+normalized request、不得按 attempt 隐式修改模型输入；当前实现每个协议只生成一次
+request body，Provider attempt 仅重复序列化读取，符合要求。后续 P0 优先级需纳入
+DeepSeek `prompt_cache_hit_tokens/prompt_cache_miss_tokens` 端到端保真、同会话 Provider
+粘性和确定性 prefix regression。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

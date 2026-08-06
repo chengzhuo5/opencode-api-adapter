@@ -2,19 +2,14 @@ import http from 'node:http';
 import path from 'node:path';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolveRoute, UnknownModelError, RouteConfigurationError } from './routes.js';
-import { sseEncode } from './sse.js';
-import { responsesToAnthropicRequest } from './translate/responsesToAnthropic.js';
-import { responsesToChatRequest } from './translate/responsesToChat.js';
-import { chatToResponsesObject, translateChatStreamToResponses } from './translate/chatToResponses.js';
-import { anthropicToResponsesObject, translateAnthropicStreamToResponses } from './translate/anthropicToResponses.js';
-import { replayResponsesAsSse } from './translate/responsesReplay.js';
-import { maybeUpgradeModel, minimizeHistoryImages, stripAllImages, DEEPSEEK_MODELS, truncateHistory, forwardWithFallback, relayUpstream, relayError, sendJson } from './fallback.js';
+import { maybeUpgradeModel, minimizeHistoryImages, stripAllImages, DEEPSEEK_MODELS, truncateHistory, sendJson } from './fallback.js';
+import { forwardRoute } from './providerExecution.js';
 import { logEvent } from './logger.js';
 import { maybeCompressInput, loadOutput } from './compression.js';
 import { createLeanCtxClient } from './leanCtxClient.js';
 import { createHealthMonitor } from './health.js';
 import { createCircuitBreaker } from './circuitBreaker.js';
-import { createUsageLogger, createRequestTracker, readUsageLines, aggregateUsage, extractUsage } from './usageLog.js';
+import { createUsageLogger, createRequestTracker, readUsageLines, aggregateUsage } from './usageLog.js';
 import { createCodexManager } from './codexConfig.js';
 
 const ADMIN_MIME = {
@@ -262,8 +257,9 @@ async function forward(res, body, route, config, fetchImpl, compression) {
   const replay = Boolean(config.nonStreamingUpstream && body.stream === true);
   const effective = replay ? { ...body, stream: false } : body;
   if (route.upstream === 'messages') {
-    await forwardMessagesRoute(res, effective, route, config, fetchImpl, body.model, {
+    await forwardRoute(res, effective, route, config, fetchImpl, body.model, {
       replay,
+      breaker: compression?.breaker,
       tracker: compression?.tracker
     });
     return;
@@ -307,82 +303,11 @@ async function forward(res, body, route, config, fetchImpl, compression) {
     }
   }
   const compressed = await maybeCompressInput(upgraded, config, compression?.client, compression?.storeDir, compression?.cache, compression?.safety, compression?.stats);
-  if (route.upstream === 'chat') {
-    await forwardChatRoute(res, compressed, route, config, fetchImpl, body.model, { replay, tracker: compression?.tracker });
-    return;
-  }
-  await forwardWithFallback(res, compressed, route, config, fetchImpl, body.model, { replay, breaker: compression?.breaker, tracker: compression?.tracker });
-}
-
-async function forwardChatRoute(res, body, route, config, fetchImpl, displayModel, options = {}) {
-  const effective = options.replay ? { ...body, stream: false } : body;
-  const requestBody = responsesToChatRequest(effective);
-  const providers = routeProviders(route, config);
-  for (let index = 0; index < providers.length; index++) {
-    const provider = providers[index];
-    const last = index === providers.length - 1;
-    const headers = {
-      'content-type': 'application/json',
-      authorization: `Bearer ${provider.apiKey ?? config.apiKey}`
-    };
-    let upstream;
-    try {
-      upstream = await fetchImpl(provider.endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(requestBody),
-        signal: requestSignal(config)
-      });
-    } catch (error) {
-      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'network_error' });
-      logProtocolFallback(config, displayModel, 'chat', provider, providers[index + 1], 'network_error');
-      if (!last) continue;
-      sendJson(res, 502, { error: { message: error?.message || 'chat upstream failed' } });
-      return;
-    }
-    if (!upstream.ok) {
-      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: upstream.status, error: 'http_error' });
-      logProtocolFallback(config, displayModel, 'chat', provider, providers[index + 1], 'http_error', upstream.status);
-      if (!last) continue;
-      await relayError(res, upstream);
-      return;
-    }
-    if (effective.stream) {
-      let usage = null;
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-      await translateChatStreamToResponses(upstream.body, displayModel, (event, data) => {
-        if (event === 'response.completed' && data?.response) {
-          const u = extractUsage(data.response);
-          if (u) usage = u;
-        }
-        res.write(sseEncode(event, data));
-      });
-      res.end();
-      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
-      return;
-    }
-    let chat;
-    try {
-      chat = await upstream.json();
-    } catch {
-      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'invalid_json' });
-      logProtocolFallback(config, displayModel, 'chat', provider, providers[index + 1], 'invalid_json');
-      if (!last) continue;
-      sendJson(res, 502, { error: { message: 'chat upstream returned invalid JSON' } });
-      return;
-    }
-    const usage = extractUsage(chat);
-    if (options.replay) {
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-      replayResponsesAsSse(chatToResponsesObject(chat, displayModel), (event, data) => res.write(sseEncode(event, data)));
-      res.end();
-      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
-      return;
-    }
-    sendJson(res, upstream.status, chatToResponsesObject(chat, displayModel));
-    options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
-    return;
-  }
+  await forwardRoute(res, compressed, route, config, fetchImpl, body.model, {
+    replay,
+    breaker: compression?.breaker,
+    tracker: compression?.tracker
+  });
 }
 
 async function readJson(req) {
@@ -415,102 +340,5 @@ function validateResponsesRequest(body) {
   }
   if (typeof body.model !== 'string' || !body.model.trim()) {
     throw new RequestValidationError('model must be a non-empty string');
-  }
-}
-
-function routeProviders(route, config) {
-  if (Array.isArray(route.providers) && route.providers.length) return route.providers;
-  return [
-    { endpoint: route.endpoint, apiKey: route.apiKey ?? config.apiKey },
-    ...(route.fallbackEndpoint
-      ? [{ endpoint: route.fallbackEndpoint, apiKey: route.fallbackApiKey ?? config.apiKey }]
-      : [])
-  ].filter((provider) => provider.endpoint);
-}
-
-function requestSignal(config) {
-  return AbortSignal.timeout(config.timeouts?.requestMs || 600000);
-}
-
-function logProtocolFallback(config, model, upstream, provider, nextProvider, reason, status) {
-  logEvent(config, {
-    event: 'provider_fallback',
-    model,
-    upstream,
-    reason,
-    primary_url: provider.endpoint,
-    ...(status ? { primary_status: status } : {}),
-    fallback_url: nextProvider?.endpoint ?? null
-  });
-}
-
-async function forwardMessagesRoute(res, body, route, config, fetchImpl, displayModel, options = {}) {
-  const requestBody = responsesToAnthropicRequest(body);
-  const providers = routeProviders(route, config);
-  for (let index = 0; index < providers.length; index++) {
-    const provider = providers[index];
-    const last = index === providers.length - 1;
-    const headers = {
-      'content-type': 'application/json',
-      'x-api-key': provider.apiKey ?? config.apiKey,
-      'anthropic-version': '2023-06-01'
-    };
-    let upstream;
-    try {
-      upstream = await fetchImpl(provider.endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(requestBody),
-        signal: requestSignal(config)
-      });
-    } catch (error) {
-      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'network_error' });
-      logProtocolFallback(config, displayModel, 'messages', provider, providers[index + 1], 'network_error');
-      if (!last) continue;
-      sendJson(res, 502, { error: { message: error?.message || 'messages upstream failed' } });
-      return;
-    }
-    if (!upstream.ok) {
-      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: upstream.status, error: 'http_error' });
-      logProtocolFallback(config, displayModel, 'messages', provider, providers[index + 1], 'http_error', upstream.status);
-      if (!last) continue;
-      await relayError(res, upstream);
-      return;
-    }
-    if (body.stream) {
-      let usage = null;
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-      await translateAnthropicStreamToResponses(upstream.body, displayModel, (event, data) => {
-        if (event === 'response.completed' && data?.response) {
-          const extracted = extractUsage(data.response);
-          if (extracted) usage = extracted;
-        }
-        res.write(sseEncode(event, data));
-      });
-      res.end();
-      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
-      return;
-    }
-    let message;
-    try {
-      message = await upstream.json();
-    } catch {
-      options.tracker?.record({ endpoint: provider.endpoint, ok: false, status: 502, error: 'invalid_json' });
-      logProtocolFallback(config, displayModel, 'messages', provider, providers[index + 1], 'invalid_json');
-      if (!last) continue;
-      sendJson(res, 502, { error: { message: 'messages upstream returned invalid JSON' } });
-      return;
-    }
-    const usage = extractUsage(message);
-    if (options.replay) {
-      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-      replayResponsesAsSse(anthropicToResponsesObject(message, displayModel), (event, data) => res.write(sseEncode(event, data)));
-      res.end();
-      options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
-      return;
-    }
-    sendJson(res, upstream.status, anthropicToResponsesObject(message, displayModel));
-    options.tracker?.record({ endpoint: provider.endpoint, ok: true, status: upstream.status, usage });
-    return;
   }
 }

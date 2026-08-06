@@ -382,7 +382,7 @@ test('logs API fallback trigger and result without request contents', async () =
   assert.equal(JSON.stringify(events).includes('private prompt'), false);
 });
 
-import { clearUnsupportedCache, UNSUPPORTED_CACHE_TTL_MS, __setUnsupportedCacheNowForTest, __resetUnsupportedCacheNowForTest } from '../src/fallback.js';
+import { clearUnsupportedCache, UNSUPPORTED_CACHE_TTL_MS, __setUnsupportedCacheNowForTest, __resetUnsupportedCacheNowForTest } from '../src/providerExecution.js';
 
 test('remembers unsupported responses endpoint for subsequent requests', async () => {
   clearUnsupportedCache();
