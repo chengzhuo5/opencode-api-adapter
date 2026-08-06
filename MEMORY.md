@@ -190,6 +190,13 @@ DeepSeek `prompt_cache_hit_tokens/prompt_cache_miss_tokens` 端到端保真、�
 复用率与前缀变化率。最终全套 216/216、smoke 200/200、双向四跳 mock 均通过；
 `npm pack --dry-run` 确认新增诊断与亲和 Module 进入发布包。
 
+**部署验证**：commit `bd75e5d` 已推送并重启 `CodexRouter`，Node PID
+`12232 → 37556`；`/healthz` 200，管理页已包含 Cache Miss、费用与 checkpoint 指标。
+真实 DeepSeek 流式请求 200 completed，最新 schema v2 usage 为 hit=0、miss=116，
+conversation/prefix/tool/provider 四类 HMAC 指纹齐全、`ok:true / error:null`；GPT 的
+11 项 tool_search 截断边界请求 200 completed。最近的 `stream_interrupted` 仍是部署前
+`2026-08-06T04:54:12.493Z` 的旧记录，新版本未新增。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。
