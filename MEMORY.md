@@ -73,6 +73,41 @@ URL 规范化、独立 timeout、协议健康探针、`response.incomplete` 终�
 Windows 服务 `CodexRouter` 后才生效；重启后应检查 `/healthz`、`/api/status`，
 并用最小 Responses 请求确认实际 provider。
 
+## 2026-08-06：全面优化阶段的架构审计基线
+
+**结构证据**：对 `src/` 的 21 个代码文件做了确定性 AST 有向图分析，得到 167 个
+节点、430 条边、7 个社区；最高连接点是 `createRouter()`（21 edges）、
+`forwardWithFallback()`（19）、`forwardChatRoute()` / `forwardMessagesRoute()`
+（各 13）和 `forwardChat()`（12）。`src/server.js` 516 行、`src/fallback.js`
+815 行，二者属于不同低 cohesion 社区，却重复持有 provider 遍历、鉴权、超时、
+failover、usage、错误映射与流/非流响应政策。上一轮三协议行为漂移正是该结构的实际
+故障表现。
+
+**确定性性能/可靠性问题**：
+
+1. `usageLog.log()` 在请求收尾热路径使用 `appendFileSync`；`/api/status` 与
+   `/v1/usage` 每次使用 `readFileSync` 读取、切分、JSON.parse 并重新聚合完整 JSONL。
+   当前日志已 748,440 bytes，管理页又每 3 秒轮询 `/api/status`，所以仅打开控制台就会
+   持续阻塞 Node 事件循环，成本随历史无限增长。
+2. `readJson` / `readRawBody` 把全部 chunk 放进数组再 `Buffer.concat`，没有请求体字节
+   上限、入站 idle deadline 或客户端 abort 分类；恶意/误配置请求可造成无界内存增长和
+   长时间占用连接。
+3. SSE 终态、usage、keepalive、reader cancel、first-event retry 分散在
+   `fallback.js`、`health.js` 与两套协议 translator 中；本次
+   `response.incomplete` 线上误判说明该政策仍需要集中。
+4. 管理 mutation 接口（reload/restart/codex apply/restore）没有在非 loopback bind
+   时增加控制面鉴权/origin 防护；`admin/app.js` 对 `{ error: { message } }` 直接构造
+   `Error(object)`，界面会显示 `[object Object]`。
+5. 桌面管理页存在发布漂移：仓库 `admin/index.html`、`admin/app.js` 与
+   `desktop/assets/admin` / `desktop/dist/assets/admin` 哈希已不同；打包 App 的
+   `seedDataDir()` 又只在 `%LOCALAPPDATA%\CodexRouter\admin` 不存在时复制，已有安装
+   永远不会获得新版 UI。
+
+**候选顺序**：优先把三协议 provider 执行政策收进一个 deep module（协议 adapter
+只负责转换）；随后把 usage 持久化/索引/轮转收进一个 deep module、增加有界请求入口、
+统一 stream lifecycle、保护控制面并修复桌面资源版本迁移。可视化评审报告生成在系统
+临时目录 `architecture-review-20260806-131500.html`，不进入仓库。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。
