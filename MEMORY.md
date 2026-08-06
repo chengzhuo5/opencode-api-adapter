@@ -600,3 +600,4 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **启动成本**：启动只从活动/轮转文件尾部读取有界字节，并丢弃截断的首行；保留的记录按时间顺序合并后再进入有界 ring snapshot。内存淘汰只影响进程内 `/v1/usage` 聚合，不删除已持久化 JSONL。
 - **验证**：新增轮转批量写入、旧后缀清理、内存上限、启动 tail 完整行回归；Usage Store/配置定向测试 **24/24** 通过。当前线上日志约 759 KiB，低于默认 8 MiB 上限，未主动轮转/删除已有日志。
 - **缓存约束**：此阶段只限于本地 usage 观测与持久化，不改变模型可见请求、DeepSeek hit/miss 字段、Provider 粘性、工具顺序或压缩 checkpoint。
+- **部署复测**：commit `7577bbe` 已推送并通过服务级重启加载；PID `37648 → 49600`，`/healthz` 200，`api/status` 显示 `maxFileBytes=8388608`、`maxFiles=3`、`maxEntries=50000`、`startupMaxBytes=8388608`。真实 Responses 探针返回 200/合法 `incomplete`，`/v1/usage` 请求数 `923 → 924`，异步 JSONL 持久化正常；`compress.enabled=false` 与 `circuitBreaker.enabled=false` 保持不变。
