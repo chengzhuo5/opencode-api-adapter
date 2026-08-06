@@ -216,6 +216,12 @@ conversation/prefix/tool/provider 四类 HMAC 指纹齐全、`ok:true / error:nu
 4. 新增即时可见、异步持久化、显式 flush、聚合对象复用和写入失效回归。全套
    217/217、smoke 200/200、pack dry-run 通过。
 
+**部署复测**：commit `671a6ad` 已推送并重启服务，Node PID
+`37556 → 22648`。同样 20 次线上 `/api/status`：中位 1.52 ms（原 11.52 ms，约
+下降 87%），p95 28.74 ms（原 49.04 ms）。真实 DeepSeek 请求 completed 后，
+`/v1/usage` 在下一次查询立即从 2,775 增到 2,776；JSONL 文件由 751,399 增到
+752,220 bytes，异步持久化成功。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。
