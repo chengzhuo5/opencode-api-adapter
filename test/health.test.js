@@ -164,6 +164,35 @@ test('health monitor accepts response.incomplete as a healthy Responses terminal
   assert.equal(bodies[0].max_output_tokens, undefined, 'health probes must not force an incomplete response');
 });
 
+test('health monitor only treats SSE event names as terminal states', async () => {
+  const monitor = createHealthMonitor({
+    config: {
+      models: {
+        'deepseek-v4-flash': {
+          upstream: 'responses',
+          endpoint: [{ url: 'https://deepseek.test/v1', apiKey: 'deepseek-key' }]
+        }
+      },
+      healthCheck: {
+        enabled: true,
+        models: ['deepseek-v4-flash'],
+        intervalMs: 60_000,
+        timeoutMs: 5_000
+      }
+    },
+    fetchImpl: async () => new Response(
+      'event: response.output_text.delta\n'
+      + 'data: {"type":"response.output_text.delta","delta":"literal response.failed text"}\n\n'
+      + 'event: response.completed\n'
+      + 'data: {"type":"response.completed","response":{"id":"r1","status":"completed"}}\n\n',
+      { status: 200, headers: { 'content-type': 'text/event-stream' } }
+    )
+  });
+  const result = await monitor.probeAll();
+  assert.equal(result.length, 1);
+  assert.equal(result[0].healthy, true);
+});
+
 test('health monitor keeps separate state for credentials sharing one endpoint', async () => {
   const seenKeys = [];
   const monitor = createHealthMonitor({

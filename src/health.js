@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { logEvent } from './logger.js';
 import { getModelEntry, listRoutedModels, resolveRoute } from './routes.js';
 import { createAbortScope, readWithAbort } from './requestLifecycle.js';
+import { parseSseEvent } from './sse.js';
 
 /**
  * 模型健康监控：定期探测指定 provider 是否可用。
@@ -253,14 +254,26 @@ async function readResponsesProbeTerminal(body, signal) {
   try {
     while (true) {
       const { done, value } = await readWithAbort(reader, signal);
-      if (done) return false;
+      if (done) return terminalFromPart(buffer);
       buffer += decoder.decode(value, { stream: true });
-      const terminal = buffer.match(/response\.(completed|incomplete|failed)/);
-      if (terminal) return terminal[1] !== 'failed';
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        const terminal = terminalFromPart(part);
+        if (terminal !== null) return terminal;
+      }
       if (buffer.length > 8192) buffer = buffer.slice(-4096);
     }
   } finally {
     try { await reader.cancel(); } catch { /* noop */ }
     reader.releaseLock();
   }
+}
+
+function terminalFromPart(part) {
+  const event = parseSseEvent(part);
+  if (!event) return null;
+  if (event.event === 'response.completed' || event.event === 'response.incomplete') return true;
+  if (event.event === 'response.failed') return false;
+  return null;
 }

@@ -648,5 +648,6 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 
 - **根因**：自动健康探测只扫描 `config.models` exact entries；`modelPatterns.gpt-*` 虽然实际路由到自定义 Provider，却没有任何主动探针和 `provider_health` 状态。
 - **修复**：`health.js` 通过 `listRoutedModels()` + `getModelEntry()` 展开已知模型元数据/目录中的 pattern 命中项；只发送真实模型名，不会把 `gpt-*` 配置语法发给上游；显式 `healthCheck.models` 仍保持最高优先级。
-- **验证**：新增 pattern Provider 探针回归，health 定向测试 **10/10** 通过。
+- **SSE 解析修复**：Responses 探针不再用正则扫描整段 payload；仅解析真实 `event:` 名称。模型文本中出现字面量 `response.failed` 不会抢先误判，最终 `response.completed` / `response.incomplete` 才决定成功。
+- **验证**：新增 pattern Provider 探针与“文本包含终止词”回归，health 定向测试 **11/11** 通过。
 - **缓存约束**：探针仍使用固定最小请求，不注入会话、时间、随机字段，不改变 DeepSeek 模型可见前缀或正式请求路由。
