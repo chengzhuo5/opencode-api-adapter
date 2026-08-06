@@ -198,3 +198,21 @@ test('converts streamed apply_patch tool call to custom_tool_call on done', asyn
   assert.ok(customDone, 'expected response.custom_tool_call.done');
   assert.equal(customDone.data.input, patch);
 });
+
+test('translated chat stream cancels quietly when the client lifecycle aborts', async () => {
+  let cancelled = 0;
+  const aborter = new AbortController();
+  const body = new ReadableStream({
+    cancel() {
+      cancelled += 1;
+    }
+  });
+  const events = [];
+  const ok = await translateChatStreamToResponses(body, 'deepseek-v4-flash', (event) => {
+    events.push(event);
+    if (event === 'response.in_progress') aborter.abort(new Error('client disconnected'));
+  }, { signal: aborter.signal });
+  assert.equal(ok, false);
+  assert.equal(cancelled, 1);
+  assert.equal(events.includes('response.failed'), false, 'client cancellation is not an upstream failure');
+});

@@ -14,6 +14,7 @@ import { createCodexManager } from './codexConfig.js';
 import { createProviderAffinity } from './providerAffinity.js';
 import { createCacheDiagnostics } from './cacheDiagnostics.js';
 import { createManagementAccess } from './managementAccess.js';
+import { createClientDisconnectScope } from './requestLifecycle.js';
 
 const ADMIN_MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -217,6 +218,7 @@ export function createRouter(config, {
             })
           : null;
         tracker?.annotate({ conversation_key_hash: affinityKey });
+        const lifecycle = createClientDisconnectScope(req, res);
         try {
           await forward(res, body, route, config, fetchImpl, {
             client: ctxClient,
@@ -228,12 +230,16 @@ export function createRouter(config, {
             tracker,
             affinityKey,
             cacheDiagnostics,
+            signal: lifecycle.signal,
             onProviderSuccess: (endpoint) => providerAffinity.recordSuccess(affinityKey, endpoint)
           });
         } catch (error) {
-          tracker?.record({ ok: false, status: 502, error: String(error?.message || 'internal error').slice(0, 200) });
+          if (!lifecycle.signal.aborted) {
+            tracker?.record({ ok: false, status: 502, error: String(error?.message || 'internal error').slice(0, 200) });
+          }
           throw error;
         } finally {
+          lifecycle.dispose();
           if (usageLogger && tracker) usageLogger.log(tracker.finalize());
         }
         return;
@@ -383,7 +389,8 @@ async function forward(res, body, route, config, fetchImpl, compression) {
     breaker: compression?.breaker,
     tracker: compression?.tracker,
     onProviderSuccess: compression?.onProviderSuccess,
-    cacheDiagnostics: compression?.cacheDiagnostics
+    cacheDiagnostics: compression?.cacheDiagnostics,
+    signal: compression?.signal
   });
 }
 

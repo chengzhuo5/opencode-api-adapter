@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
+import net from 'node:net';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -445,6 +446,101 @@ test('stalled request body returns 408 after the configured idle timeout', async
     });
     assert.equal(result.status, 408);
     assert.match(JSON.parse(result.body).error.message, /idle timeout/i);
+  });
+});
+
+test('client disconnect aborts and cancels an in-flight upstream stream', async () => {
+  let attemptSignal = null;
+  let upstreamController = null;
+  let cancelled = 0;
+  const fetchImpl = async (_url, init) => {
+    attemptSignal = init.signal;
+    return new Response(new ReadableStream({
+      start(controller) {
+        upstreamController = controller;
+        controller.enqueue(new TextEncoder().encode(
+          'event: response.created\n'
+          + 'data: {"type":"response.created","response":{"id":"r1","model":"deepseek-v4-flash","status":"in_progress"}}\n\n'
+        ));
+      },
+      cancel() {
+        cancelled += 1;
+      }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' }
+    });
+  };
+
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    timeouts: { requestMs: 60_000, streamIdleMs: 1_000 },
+    circuitBreaker: {
+      enabled: true,
+      failureThreshold: 1,
+      successThreshold: 1,
+      timeoutMs: 60_000,
+      errorRateThreshold: 1,
+      minRequests: 100
+    }
+  }, fetchImpl, async (base) => {
+    const url = new URL('/v1/responses', base);
+    const payload = JSON.stringify({
+      model: 'deepseek-v4-flash',
+      stream: true,
+      input: [{ type: 'message', role: 'user', content: 'disconnect test' }]
+    });
+    await new Promise((resolve, reject) => {
+      let received = '';
+      const guard = setTimeout(() => {
+        socket.destroy();
+        reject(new Error('timed out waiting for the buffered first SSE event'));
+      }, 1_000);
+      guard.unref?.();
+      const socket = net.createConnection({
+        host: url.hostname,
+        port: Number(url.port)
+      });
+      socket.once('connect', () => {
+        socket.write(
+          `POST ${url.pathname} HTTP/1.1\r\n`
+          + `Host: ${url.host}\r\n`
+          + 'Content-Type: application/json\r\n'
+          + `Content-Length: ${Buffer.byteLength(payload)}\r\n`
+          + '\r\n'
+          + payload
+        );
+      });
+      socket.on('data', (chunk) => {
+        received += chunk.toString('utf8');
+        if (!received.includes('event: response.created')) return;
+        clearTimeout(guard);
+        socket.destroy();
+        resolve();
+      });
+      socket.on('error', (error) => {
+        clearTimeout(guard);
+        reject(error);
+      });
+    });
+
+    const deadline = Date.now() + 1_000;
+    while (!attemptSignal?.aborted && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    try {
+      assert.equal(attemptSignal?.aborted, true, 'client close must abort the provider attempt signal');
+      assert.equal(cancelled, 1, 'client close must cancel the locked upstream reader');
+      const status = await fetch(base + '/api/status').then((response) => response.json());
+      const breaker = status.circuit.find((entry) => entry.key.includes('deepseek-v4-flash'));
+      assert.equal(breaker?.state, 'closed');
+      assert.equal(breaker?.totalRequests, 0, 'client cancellation must not count as provider traffic');
+      assert.equal(breaker?.failedRequests, 0, 'client cancellation must not trip the provider breaker');
+    } finally {
+      if (!attemptSignal?.aborted) upstreamController?.close();
+    }
   });
 });
 

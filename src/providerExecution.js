@@ -16,6 +16,7 @@ import {
 import { logEvent } from './logger.js';
 import { extractUsage } from './usageLog.js';
 import { resolveProviders } from './routes.js';
+import { createAbortScope } from './requestLifecycle.js';
 
 const unsupportedResponses = new Map();
 const unsupportedNotified = new Map();
@@ -155,92 +156,117 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
       continue;
     }
 
-    let upstream;
+    const attempt = providerAttempt(config, options.signal);
     try {
-      upstream = await fetchImpl(provider.endpoint, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${provider.apiKey}`
-        },
-        body: JSON.stringify(requestBody),
-        signal: requestSignal(config)
-      });
-    } catch {
-      recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'network_error');
-      logResponsesFallback(config, displayModel, provider, nextProvider, 'network_error');
-      if (last) {
-        if (hasChatFallback(config)) {
-          await forwardChatFallback(res, body, config, fetchImpl, displayModel, options);
+      let upstream;
+      try {
+        upstream = await fetchImpl(provider.endpoint, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${provider.apiKey}`
+          },
+          body: JSON.stringify(requestBody),
+          signal: attempt.signal
+        });
+      } catch {
+        if (clientDisconnected(options)) {
+          recordClientDisconnect(options, provider.endpoint);
+          return;
+        }
+        recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'network_error');
+        logResponsesFallback(config, displayModel, provider, nextProvider, 'network_error');
+        if (last) {
+          if (hasChatFallback(config)) {
+            await forwardChatFallback(res, body, config, fetchImpl, displayModel, options);
+          } else {
+            sendJson(res, 502, {
+              error: { message: `upstream network error and no chat fallback configured for ${displayModel}` }
+            });
+          }
+          return;
+        }
+        continue;
+      }
+
+      if (upstream.ok) {
+        let relayOk = true;
+        let usage = null;
+        try {
+          if (options.replay) {
+            relayOk = await relayNonStreamingResponse(
+              res,
+              upstream,
+              displayModel,
+              (value) => { usage = value; },
+              attempt.signal
+            );
+          } else if (options.streamRetryFallback ?? true) {
+            relayOk = await relayUpstreamSmart(
+              res,
+              upstream,
+              body,
+              config,
+              fetchImpl,
+              displayModel,
+              provider,
+              (value) => { usage = value; },
+              attempt.signal
+            );
+          } else {
+            relayOk = await relayUpstream(
+              res,
+              upstream,
+              (value) => { usage = value; },
+              attempt.signal
+            );
+          }
+        } catch (error) {
+          relayOk = false;
+          if (!clientDisconnected(options)) {
+            logEvent(config, {
+              event: 'relay_error',
+              model: displayModel,
+              endpoint: provider.endpoint,
+              reason: String(error?.message || 'relay error').slice(0, 200)
+            });
+            try { res.end(); } catch { /* noop */ }
+          }
+        }
+        if (clientDisconnected(options)) {
+          recordClientDisconnect(options, provider.endpoint, usage);
+        } else if (relayOk) {
+          recordSuccess(options, breakerKey, permit, provider.endpoint, upstream.status, usage);
         } else {
-          sendJson(res, 502, {
-            error: { message: `upstream network error and no chat fallback configured for ${displayModel}` }
-          });
+          recordFailure(options, breakerKey, permit, provider.endpoint, 200, 'stream_interrupted', usage);
         }
         return;
       }
-      continue;
-    }
 
-    if (upstream.ok) {
-      let relayOk = true;
-      let usage = null;
-      try {
-        if (options.replay) {
-          relayOk = await relayNonStreamingResponse(
-            res,
-            upstream,
-            displayModel,
-            (value) => { usage = value; }
-          );
-        } else if (options.streamRetryFallback ?? true) {
-          relayOk = await relayUpstreamSmart(
-            res,
-            upstream,
-            body,
-            config,
-            fetchImpl,
-            displayModel,
-            provider,
-            (value) => { usage = value; }
-          );
-        } else {
-          relayOk = await relayUpstream(res, upstream, (value) => { usage = value; });
-        }
-      } catch (error) {
-        relayOk = false;
-        logEvent(config, {
-          event: 'relay_error',
-          model: displayModel,
-          endpoint: provider.endpoint,
-          reason: String(error?.message || 'relay error').slice(0, 200)
-        });
-        try { res.end(); } catch { /* noop */ }
+      if (clientDisconnected(options)) {
+        await discardResponseBody(upstream);
+        recordClientDisconnect(options, provider.endpoint);
+        return;
       }
-      if (relayOk) {
-        recordSuccess(options, breakerKey, permit, provider.endpoint, upstream.status, usage);
+      recordFailure(options, breakerKey, permit, provider.endpoint, upstream.status, 'http_error');
+      if (last && await isUnsupportedResponse(upstream)) {
+        rememberUnsupported(displayModel, provider.endpoint);
+      }
+      logResponsesFallback(config, displayModel, provider, nextProvider, 'http_error', upstream.status);
+      if (!last) {
+        await discardResponseBody(upstream);
+        continue;
+      }
+      if (hasChatFallback(config)) {
+        await discardResponseBody(upstream);
+        await forwardChatFallback(res, body, config, fetchImpl, displayModel, options);
       } else {
-        recordFailure(options, breakerKey, permit, provider.endpoint, 200, 'stream_interrupted', usage);
+        await relayError(res, upstream);
       }
       return;
+    } finally {
+      attempt.dispose();
     }
-
-    recordFailure(options, breakerKey, permit, provider.endpoint, upstream.status, 'http_error');
-    if (last && await isUnsupportedResponse(upstream)) {
-      rememberUnsupported(displayModel, provider.endpoint);
-    }
-    logResponsesFallback(config, displayModel, provider, nextProvider, 'http_error', upstream.status);
-    if (!last) {
-      await discardResponseBody(upstream);
-      continue;
-    }
-    if (hasChatFallback(config)) {
-      await discardResponseBody(upstream);
-      await forwardChatFallback(res, body, config, fetchImpl, displayModel, options);
-    } else {
-      await relayError(res, upstream);
-    }
-    return;
   }
 }
 
@@ -291,121 +317,159 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
       continue;
     }
 
-    let upstream;
+    const attempt = providerAttempt(config, options.signal);
     try {
-      upstream = await fetchImpl(provider.endpoint, {
-        method: 'POST',
-        headers: adapter.headers(provider.apiKey ?? config.apiKey),
-        body: JSON.stringify(requestBody),
-        signal: requestSignal(config)
-      });
-    } catch (error) {
-      recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'network_error');
-      logConvertedFailure(config, displayModel, route.upstream, provider, nextProvider, 'network_error', undefined, options);
-      if (!last) continue;
-      sendJson(res, 502, {
-        error: {
-          message: error?.message || (options.responseFallback ? 'chat fallback failed' : adapter.networkError)
-        }
-      });
-      return;
-    }
-
-    if (!upstream.ok) {
-      recordFailure(options, breakerKey, permit, provider.endpoint, upstream.status, 'http_error');
-      logConvertedFailure(
-        config,
-        displayModel,
-        route.upstream,
-        provider,
-        nextProvider,
-        'http_error',
-        upstream.status,
-        options
-      );
-      if (!last) {
-        await discardResponseBody(upstream);
-        continue;
-      }
-      await relayError(res, upstream);
-      return;
-    }
-
-    if (effective.stream) {
-      let usage = null;
+      let upstream;
       try {
+        upstream = await fetchImpl(provider.endpoint, {
+          method: 'POST',
+          headers: adapter.headers(provider.apiKey ?? config.apiKey),
+          body: JSON.stringify(requestBody),
+          signal: attempt.signal
+        });
+      } catch (error) {
+        if (clientDisconnected(options)) {
+          recordClientDisconnect(options, provider.endpoint);
+          return;
+        }
+        recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'network_error');
+        logConvertedFailure(config, displayModel, route.upstream, provider, nextProvider, 'network_error', undefined, options);
+        if (!last) continue;
+        sendJson(res, 502, {
+          error: {
+            message: error?.message || (options.responseFallback ? 'chat fallback failed' : adapter.networkError)
+          }
+        });
+        return;
+      }
+
+      if (!upstream.ok) {
+        if (clientDisconnected(options)) {
+          await discardResponseBody(upstream);
+          recordClientDisconnect(options, provider.endpoint);
+          return;
+        }
+        recordFailure(options, breakerKey, permit, provider.endpoint, upstream.status, 'http_error');
+        logConvertedFailure(
+          config,
+          displayModel,
+          route.upstream,
+          provider,
+          nextProvider,
+          'http_error',
+          upstream.status,
+          options
+        );
+        if (!last) {
+          await discardResponseBody(upstream);
+          continue;
+        }
+        await relayError(res, upstream);
+        return;
+      }
+
+      if (effective.stream) {
+        let usage = null;
+        try {
+          if (clientDisconnected(options) || res.destroyed) {
+            await discardResponseBody(upstream);
+            recordClientDisconnect(options, provider.endpoint);
+            return;
+          }
+          res.writeHead(200, {
+            'content-type': 'text/event-stream',
+            'cache-control': 'no-cache',
+            connection: 'keep-alive'
+          });
+          const streamOk = await adapter.translateStream(upstream.body, displayModel, (event, data) => {
+            if (attempt.signal.aborted || res.destroyed) {
+              throw attempt.signal.reason || new Error('client disconnected');
+            }
+            if (event === 'response.completed' && data?.response) {
+              const extracted = extractUsage(data.response);
+              if (extracted) usage = extracted;
+            }
+            res.write(sseEncode(event, data));
+          }, { signal: attempt.signal });
+          if (!res.destroyed) res.end();
+          if (clientDisconnected(options)) {
+            recordClientDisconnect(options, provider.endpoint, usage);
+            return;
+          }
+          if (!streamOk) {
+            recordFailure(options, breakerKey, permit, provider.endpoint, 200, 'stream_interrupted', usage);
+            return;
+          }
+        } catch (error) {
+          if (clientDisconnected(options)) {
+            recordClientDisconnect(options, provider.endpoint, usage);
+            return;
+          }
+          recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'stream_interrupted');
+          logEvent(config, {
+            event: 'relay_error',
+            model: displayModel,
+            endpoint: provider.endpoint,
+            reason: String(error?.message || 'stream relay error').slice(0, 200)
+          });
+          try { res.end(); } catch { /* noop */ }
+          return;
+        }
+        recordSuccess(options, breakerKey, permit, provider.endpoint, upstream.status, usage);
+        return;
+      }
+
+      let response;
+      try {
+        response = await upstream.json();
+      } catch {
+        if (clientDisconnected(options)) {
+          recordClientDisconnect(options, provider.endpoint);
+          return;
+        }
+        recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'invalid_json');
+        logConvertedFailure(config, displayModel, route.upstream, provider, nextProvider, 'invalid_json', undefined, options);
+        if (!last) continue;
+        sendJson(res, 502, {
+          error: {
+            message: options.responseFallback ? 'chat fallback returned invalid JSON' : adapter.invalidJsonError
+          }
+        });
+        return;
+      }
+
+      if (clientDisconnected(options) || res.destroyed) {
+        recordClientDisconnect(options, provider.endpoint, extractUsage(response));
+        return;
+      }
+      const usage = extractUsage(response);
+      const normalized = adapter.responseObject(response, displayModel);
+      if (options.replay) {
         res.writeHead(200, {
           'content-type': 'text/event-stream',
           'cache-control': 'no-cache',
           connection: 'keep-alive'
         });
-        const streamOk = await adapter.translateStream(upstream.body, displayModel, (event, data) => {
-          if (event === 'response.completed' && data?.response) {
-            const extracted = extractUsage(data.response);
-            if (extracted) usage = extracted;
-          }
-          res.write(sseEncode(event, data));
-        });
+        replayResponsesAsSse(normalized, (event, data) => res.write(sseEncode(event, data)));
         res.end();
-        if (!streamOk) {
-          recordFailure(options, breakerKey, permit, provider.endpoint, 200, 'stream_interrupted', usage);
-          return;
-        }
-      } catch (error) {
-        recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'stream_interrupted');
-        logEvent(config, {
-          event: 'relay_error',
-          model: displayModel,
-          endpoint: provider.endpoint,
-          reason: String(error?.message || 'stream relay error').slice(0, 200)
-        });
-        try { res.end(); } catch { /* noop */ }
-        return;
+      } else {
+        sendJson(res, upstream.status, normalized);
       }
       recordSuccess(options, breakerKey, permit, provider.endpoint, upstream.status, usage);
+      if (options.responseFallback) {
+        logEvent(config, {
+          event: 'api_fallback_result',
+          model: displayModel,
+          success: true,
+          status: upstream.status,
+          fallback_endpoint: 'chat/completions',
+          fallback_url: provider.endpoint
+        });
+      }
       return;
+    } finally {
+      attempt.dispose();
     }
-
-    let response;
-    try {
-      response = await upstream.json();
-    } catch {
-      recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'invalid_json');
-      logConvertedFailure(config, displayModel, route.upstream, provider, nextProvider, 'invalid_json', undefined, options);
-      if (!last) continue;
-      sendJson(res, 502, {
-        error: {
-          message: options.responseFallback ? 'chat fallback returned invalid JSON' : adapter.invalidJsonError
-        }
-      });
-      return;
-    }
-
-    const usage = extractUsage(response);
-    const normalized = adapter.responseObject(response, displayModel);
-    if (options.replay) {
-      res.writeHead(200, {
-        'content-type': 'text/event-stream',
-        'cache-control': 'no-cache',
-        connection: 'keep-alive'
-      });
-      replayResponsesAsSse(normalized, (event, data) => res.write(sseEncode(event, data)));
-      res.end();
-    } else {
-      sendJson(res, upstream.status, normalized);
-    }
-    recordSuccess(options, breakerKey, permit, provider.endpoint, upstream.status, usage);
-    if (options.responseFallback) {
-      logEvent(config, {
-        event: 'api_fallback_result',
-        model: displayModel,
-        success: true,
-        status: upstream.status,
-        fallback_endpoint: 'chat/completions',
-        fallback_url: provider.endpoint
-      });
-    }
-    return;
   }
 }
 
@@ -476,8 +540,11 @@ function routeProviders(route, config) {
   ].filter((provider) => provider.endpoint);
 }
 
-function requestSignal(config) {
-  return AbortSignal.timeout(config.timeouts?.requestMs || 600000);
+function providerAttempt(config, parentSignal) {
+  return createAbortScope({
+    timeoutMs: config.timeouts?.requestMs || 600000,
+    parentSignal
+  });
 }
 
 async function discardResponseBody(upstream) {
@@ -496,6 +563,21 @@ function recordFailure(options, breakerKey, permit, endpoint, status, error, usa
     ok: false,
     status,
     error,
+    usage
+  });
+}
+
+function clientDisconnected(options) {
+  return options.signal?.aborted === true;
+}
+
+function recordClientDisconnect(options, endpoint, usage) {
+  options.tracker?.record({
+    endpoint,
+    provider_endpoint_hash: options.cacheDiagnostics?.endpoint(endpoint) ?? null,
+    ok: false,
+    status: 499,
+    error: 'client_disconnected',
     usage
   });
 }

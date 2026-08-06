@@ -13,21 +13,29 @@ export function sseEncode(event, data) {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-export async function* sseEvents(body) {
+export async function* sseEvents(body, { signal } = {}) {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const parts = buffer.split('\n\n');
-    buffer = parts.pop() ?? '';
-    for (const part of parts) {
-      const parsed = parseSseEvent(part);
-      if (parsed) yield parsed;
+  try {
+    while (true) {
+      const { done, value } = await readWithAbort(reader, signal);
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+      for (const part of parts) {
+        const parsed = parseSseEvent(part);
+        if (parsed) yield parsed;
+      }
     }
+    const parsed = parseSseEvent(buffer);
+    if (parsed) yield parsed;
+  } finally {
+    if (signal?.aborted) {
+      try { await reader.cancel(signal.reason); } catch { /* noop */ }
+    }
+    reader.releaseLock();
   }
-  const parsed = parseSseEvent(buffer);
-  if (parsed) yield parsed;
 }
+import { readWithAbort } from './requestLifecycle.js';

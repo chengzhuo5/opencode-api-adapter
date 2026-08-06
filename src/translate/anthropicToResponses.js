@@ -39,7 +39,7 @@ export function anthropicToResponsesObject(message, requestModel) {
   };
 }
 
-export async function translateAnthropicStreamToResponses(body, requestModel, writeEvent) {
+export async function translateAnthropicStreamToResponses(body, requestModel, writeEvent, { signal } = {}) {
   const response = {
     id: newId('resp'),
     object: 'response',
@@ -60,7 +60,7 @@ export async function translateAnthropicStreamToResponses(body, requestModel, wr
   let currentText = '';
 
   try {
-  for await (const { data } of sseEvents(body)) {
+  for await (const { data } of sseEvents(body, { signal })) {
     let event;
     try {
       event = JSON.parse(data);
@@ -147,6 +147,7 @@ export async function translateAnthropicStreamToResponses(body, requestModel, wr
     }
   }
   } catch (error) {
+    if (signal?.aborted) return false;
     response.status = 'failed';
     response.error = { code: 'upstream_error', message: (error?.message || 'stream failed').slice(0, 200) };
     writeEvent('response.failed', { type: 'response.failed', response });

@@ -282,6 +282,35 @@ breaker 关闭。`/admin` 与 `apiClient.js` 均 200，CSP/no-store/DENY frame �
 真实 DeepSeek 请求 200 completed。实际浏览器加载 ES module 后显示 6 张总览卡、
 v0.2.0 与已连接状态，控制台无错误。
 
+## 2026-08-06：Request Lifecycle 与 SSE 首事件
+
+**根因**：
+
+1. server 已创建客户端断开 signal，但 `forward()` 重新组装 Provider Execution options
+   时静默漏传，导致客户端关闭后上游 fetch/reader 继续运行。
+2. `relayUpstreamSmart` 预读到第一个完整 SSE 事件后把它放在 `initial.buffer`，
+   `pipeSseWithNormalization` 却先等下一块才 flush；首事件后停顿时，客户端只能等到
+   10 秒 keep-alive 才看到任何字节。
+3. Provider attempt 只有超时 signal，没有父请求 signal；SSE generator/reader 缺少统一
+   abort/cancel/release，首事件等待的 `Promise.race` timer 也不会在 chunk 提前到达时清理。
+
+**修复**：
+
+1. 新增 `Request Lifecycle`：TCP/response close 与 request aborted 产生父 signal，
+   每个 Provider attempt 再叠加独立 deadline；Responses、Chat、Messages、非流重试与
+   SSE reader 全链路传播。
+2. 客户端取消立即 cancel 锁定 reader、释放 lock、停止 keep-alive，不做 failover，
+   usage 记 499/client_disconnected，但不调用 breaker failure/success。
+3. 已预读的完整 SSE part 在进入 read loop 前立即 flush；首事件 deadline timer 每次
+   读取后清理并 `unref`，正常 terminal、abort 与 response destroy 都统一 cancel/cleanup。
+
+**验证**：真实 TCP 客户端收到 `response.created` 后断开，约 100 ms 内 attempt signal
+aborted、reader cancel=1；threshold=1 的 breaker 仍 closed，total/failed 均为 0。
+Chat 转换流 abort 同样安静返回 false，不生成伪 `response.failed`。全套 231/231、
+smoke 200/200、pack dry-run 38 个文件且包含 `src/requestLifecycle.js`；所有临时
+`[DEBUG-*]` 已清除。生命周期只控制 I/O，不读取或改写 Router Request，因此不影响
+DeepSeek 前缀、tools 顺序、cache usage 与 Provider Affinity。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

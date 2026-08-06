@@ -17,6 +17,7 @@
 - 内置管理页面与桌面 App：浏览器访问 `http://127.0.0.1:15722/admin` 或运行 ewvjs 打包的桌面壳，支持查看状态、编辑配置、用量统计与热重启。
 - Codex 配置管理：一键在 `~/.codex/config.toml` 中加入 `minar_route` provider 并切换 model_provider/model，注释保留原值、每次修改前时间戳备份、还原优先用注释字段，失败才提示从备份恢复。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
+- 客户端断开会沿 Request Lifecycle 立即取消当前 Provider attempt 与锁定的 SSE reader；取消不计入 Provider 熔断失败，首个已读取事件也不会滞留到下一 chunk/keep-alive。
 - 支持作为 CLI 启动，也可以导入 `createRouter` 构建自己的 Node HTTP 服务。
 
 ## 工作原理

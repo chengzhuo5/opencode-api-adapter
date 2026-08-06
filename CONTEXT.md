@@ -59,3 +59,7 @@ _Avoid_: unbounded buffering, socket-global timeout
 **Management Access**:
 The pre-routing policy that keeps the admin UI and management APIs local by default, requires a constant-time Bearer token on non-loopback listeners, and rejects untrusted browser origins before state changes.
 _Avoid_: CORS-only protection, inline secrets
+
+**Request Lifecycle**:
+The client-bound abort scope propagated through Provider Execution, per-attempt deadlines, streaming readers, and non-streaming retries. Client cancellation releases upstream work without counting as Provider failure.
+_Avoid_: orphan upstream streams, breaker pollution
