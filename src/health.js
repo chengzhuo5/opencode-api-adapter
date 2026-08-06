@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { logEvent } from './logger.js';
 import { resolveRoute } from './routes.js';
+import { createAbortScope, readWithAbort } from './requestLifecycle.js';
 
 /**
  * 模型健康监控：定期探测指定 provider 是否可用。
@@ -63,7 +64,7 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
     for (const t of collect()) watched.set(keyOf(t.model, t.endpoint, t.apiKey), t);
   };
 
-  async function probe(key) {
+  async function probe(key, { signal: parentSignal = lifecycleController?.signal } = {}) {
     let target = watched.get(key);
     if (!target) {
       refreshWatched();
@@ -71,23 +72,35 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
     }
     if (!target) return;
     let healthy = false;
+    let response = null;
+    let bodyConsumed = false;
+    const attempt = createAbortScope({ timeoutMs, parentSignal });
     try {
       const probe = buildProbeRequest(target);
-      const res = await fetchImpl(target.endpoint, {
+      response = await fetchImpl(target.endpoint, {
         method: 'POST',
         headers: probe.headers,
         body: JSON.stringify(probe.body),
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: attempt.signal
       });
       if (target.upstream === 'responses'
-        && res.ok
-        && res.headers.get('content-type')?.includes('text/event-stream')) {
-        healthy = await readResponsesProbeTerminal(res.body);
-      } else if (res.ok) {
-        healthy = true;
+        && response.ok
+        && response.headers.get('content-type')?.includes('text/event-stream')) {
+        bodyConsumed = true;
+        healthy = await readResponsesProbeTerminal(response.body, attempt.signal);
+      } else {
+        healthy = response.ok;
       }
     } catch {
       healthy = false;
+    } finally {
+      if (response && !bodyConsumed) {
+        try { await response.body?.cancel(); } catch { /* noop */ }
+      }
+      attempt.dispose();
+    }
+    if (parentSignal?.aborted) {
+      return undefined;
     }
     const wasUnhealthy = unhealthy.has(key);
     if (healthy && wasUnhealthy) {
@@ -104,27 +117,51 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
     return healthy;
   }
 
-  async function probeAll() {
+  async function probeAll({ signal = lifecycleController?.signal } = {}) {
     refreshWatched();
     return Promise.all([...watched.keys()].map(async (key) => ({
       key,
-      healthy: await probe(key)
+      healthy: await probe(key, { signal })
     })));
   }
 
   let timer = null;
+  let lifecycleController = null;
+  let scheduledCycle = null;
+
   function start() {
     refreshWatched();
     if (!hc.enabled) return;
+    if (timer) return timer;
+    lifecycleController = new AbortController();
+    const runScheduledCycle = () => {
+      const controller = lifecycleController;
+      if (!controller || controller.signal.aborted || scheduledCycle) return scheduledCycle;
+      let cycle;
+      cycle = probeAll({ signal: controller.signal })
+        .catch(() => [])
+        .finally(() => {
+          if (scheduledCycle === cycle) scheduledCycle = null;
+        });
+      scheduledCycle = cycle;
+      return cycle;
+    };
     // 启动时立即探测一次，然后按 intervalMs 周期探测
-    probeAll().catch(() => {});
-    timer = setInterval(() => { probeAll().catch(() => {}); }, intervalMs);
+    runScheduledCycle();
+    timer = setInterval(runScheduledCycle, intervalMs);
     timer.unref?.();
     return timer;
   }
+
   function stop() {
     if (timer) clearInterval(timer);
     timer = null;
+    scheduledCycle = null;
+    const controller = lifecycleController;
+    lifecycleController = null;
+    if (controller && !controller.signal.aborted) {
+      controller.abort(new Error('health monitor stopped'));
+    }
   }
 
   return {
@@ -186,14 +223,14 @@ function buildProbeRequest(target) {
   };
 }
 
-async function readResponsesProbeTerminal(body) {
+async function readResponsesProbeTerminal(body, signal) {
   const reader = body?.getReader();
   if (!reader) return false;
   const decoder = new TextDecoder();
   let buffer = '';
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithAbort(reader, signal);
       if (done) return false;
       buffer += decoder.decode(value, { stream: true });
       const terminal = buffer.match(/response\.(completed|incomplete|failed)/);

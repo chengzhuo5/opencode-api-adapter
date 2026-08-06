@@ -207,3 +207,113 @@ test('health monitor keeps separate state for credentials sharing one endpoint',
   assert.equal(result.filter((entry) => entry.healthy).length, 1);
   assert.equal(monitor.status().filter((entry) => entry.unhealthy).length, 1);
 });
+
+test('health monitor cancels non-stream response bodies after probing', async () => {
+  let cancelled = false;
+  const monitor = createHealthMonitor({
+    config: {
+      models: {
+        'minimax-m3': {
+          upstream: 'messages',
+          endpoint: [{ url: 'https://messages.test/v1', apiKey: 'key' }]
+        }
+      },
+      healthCheck: {
+        enabled: true,
+        models: ['minimax-m3'],
+        intervalMs: 60_000,
+        timeoutMs: 5_000
+      }
+    },
+    fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"id":"m1"}'));
+      },
+      cancel() {
+        cancelled = true;
+      }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    })
+  });
+  await monitor.probeAll();
+  assert.equal(cancelled, true, 'non-stream probe bodies must be released');
+});
+
+test('health monitor does not overlap slow scheduled probe cycles', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const monitor = createHealthMonitor({
+    config: {
+      models: {
+        'minimax-m3': {
+          upstream: 'messages',
+          endpoint: [{ url: 'https://messages.test/v1', apiKey: 'key' }]
+        }
+      },
+      healthCheck: {
+        enabled: true,
+        models: ['minimax-m3'],
+        intervalMs: 15,
+        timeoutMs: 500
+      }
+    },
+    fetchImpl: async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      active -= 1;
+      return new Response(JSON.stringify({ id: 'm1' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  });
+  monitor.start();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  monitor.stop();
+  assert.equal(maxActive, 1, 'scheduled health probes must be single-flight');
+});
+
+test('health monitor stop aborts in-flight probes and ignores retired results', async () => {
+  let started;
+  const statuses = [];
+  const monitor = createHealthMonitor({
+    config: {
+      models: {
+        'minimax-m3': {
+          upstream: 'messages',
+          endpoint: [{ url: 'https://messages.test/v1', apiKey: 'key' }]
+        }
+      },
+      healthCheck: {
+        enabled: true,
+        models: ['minimax-m3'],
+        intervalMs: 60_000,
+        timeoutMs: 500
+      }
+    },
+    onStatusChange: (key, healthy) => statuses.push({ key, healthy }),
+    fetchImpl: async (_url, init) => {
+      started?.();
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 120);
+        init.signal.addEventListener('abort', () => {
+          clearTimeout(timer);
+          reject(new Error('probe aborted'));
+        }, { once: true });
+      });
+      return new Response(JSON.stringify({ error: { message: 'retired' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  });
+  const startedPromise = new Promise((resolve) => { started = resolve; });
+  monitor.start();
+  await startedPromise;
+  monitor.stop();
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  assert.deepEqual(statuses, [], 'retired probe results must not mutate health state');
+});

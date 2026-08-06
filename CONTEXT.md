@@ -65,7 +65,7 @@ The pre-routing policy that keeps the admin UI and management APIs local by defa
 _Avoid_: CORS-only protection, inline secrets
 
 **Request Lifecycle**:
-The client-bound abort scope propagated through Provider Execution, per-attempt deadlines, streaming readers, and non-streaming retries. Client cancellation releases upstream work without counting as Provider failure.
+The client-bound abort scope propagated through Provider Execution, per-attempt deadlines, streaming readers, non-streaming retries, and health-probe retirement. Client cancellation releases upstream work without counting as Provider failure.
 _Avoid_: orphan upstream streams, breaker pollution
 
 **Hot Reload Transaction**:
