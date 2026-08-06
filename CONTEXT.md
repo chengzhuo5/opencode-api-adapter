@@ -53,8 +53,8 @@ A content-addressed, disk-persisted compressed tool output reused byte-for-byte 
 _Avoid_: regenerated summary, transient compression
 
 **Usage Store**:
-The in-memory request-usage snapshot with versioned aggregate caching and asynchronous batched JSONL persistence.
-_Avoid_: per-poll file scan, synchronous request logging
+The bounded in-memory request-usage snapshot with versioned aggregate caching, asynchronous batched JSONL persistence, bounded startup tail loading, and size-based file rotation.
+_Avoid_: per-poll file scan, synchronous request logging, unbounded history
 
 **Request Ingress**:
 The bounded HTTP body reader that enforces declared and streamed byte limits plus per-chunk idle deadlines before Request Preparation.

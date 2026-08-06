@@ -1,6 +1,29 @@
-import { readFileSync, existsSync, mkdirSync } from 'node:fs';
-import { appendFile } from 'node:fs/promises';
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  statSync
+} from 'node:fs';
+import {
+  appendFile,
+  readdir,
+  rename,
+  stat,
+  unlink
+} from 'node:fs/promises';
 import path from 'node:path';
+
+export const DEFAULT_USAGE_MAX_FILE_BYTES = 8 * 1024 * 1024;
+export const DEFAULT_USAGE_MAX_FILES = 3;
+export const DEFAULT_USAGE_MAX_ENTRIES = 50_000;
+export const DEFAULT_USAGE_STARTUP_MAX_BYTES = 8 * 1024 * 1024;
+const MAX_USAGE_FILE_BYTES = 1024 * 1024 * 1024;
+const MAX_USAGE_FILES = 1000;
+const MAX_USAGE_ENTRIES = 1_000_000;
+const MAX_USAGE_STARTUP_BYTES = 256 * 1024 * 1024;
 
 /**
  * 轻量请求日志 + 用量统计（零依赖，JSONL 追加写入）。
@@ -14,7 +37,7 @@ import path from 'node:path';
  *   latency_ms, streamed, error
  * }
  *
- * GET /v1/usage 时按需聚合，不做定时 rollup；文件过大时可后续加轮转。
+ * GET /v1/usage 时按需聚合。磁盘文件、启动读取量和内存快照都有明确上限。
  */
 
 function tokenValue(...values) {
@@ -144,7 +167,23 @@ export function createUsageLogger(config = {}) {
   if (!uc.enabled || !uc.file) return null;
   const file = path.resolve(uc.file);
   mkdirSync(path.dirname(file), { recursive: true });
-  const entries = readUsageLines(file);
+  const maxFileBytes = nonNegativeInteger(
+    uc.maxFileBytes,
+    DEFAULT_USAGE_MAX_FILE_BYTES,
+    MAX_USAGE_FILE_BYTES
+  );
+  const maxFiles = nonNegativeInteger(uc.maxFiles, DEFAULT_USAGE_MAX_FILES, MAX_USAGE_FILES);
+  const maxEntries = positiveInteger(uc.maxEntries, DEFAULT_USAGE_MAX_ENTRIES, MAX_USAGE_ENTRIES);
+  const startupMaxBytes = positiveInteger(
+    uc.startupMaxBytes,
+    DEFAULT_USAGE_STARTUP_MAX_BYTES,
+    MAX_USAGE_STARTUP_BYTES
+  );
+  const loadedEntries = readUsageHistory(file, { maxFiles, maxBytes: startupMaxBytes });
+  const entries = loadedEntries.length > maxEntries
+    ? loadedEntries.slice(-maxEntries)
+    : loadedEntries;
+  let entryHead = 0;
   const aggregateCache = new Map();
   const flushDelayMs = Number.isFinite(uc.flushDelayMs) && uc.flushDelayMs >= 0
     ? uc.flushDelayMs
@@ -154,13 +193,83 @@ export function createUsageLogger(config = {}) {
   let writeChain = Promise.resolve();
   let closed = false;
 
+  function appendEntry(entry) {
+    if (entries.length < maxEntries) {
+      entries.push(entry);
+      return;
+    }
+    entries[entryHead] = entry;
+    entryHead = (entryHead + 1) % maxEntries;
+  }
+
+  function orderedEntries() {
+    if (entryHead === 0 || entries.length < maxEntries) return entries;
+    return entries.slice(entryHead).concat(entries.slice(0, entryHead));
+  }
+
+  async function rotateFiles() {
+    await removeExpiredRotations(file, maxFiles);
+    if (maxFiles === 0) {
+      await unlinkIfExists(file);
+      return;
+    }
+    for (let index = maxFiles - 1; index >= 1; index--) {
+      const source = `${file}.${index}`;
+      if (!await pathExists(source)) continue;
+      const target = `${file}.${index + 1}`;
+      await unlinkIfExists(target);
+      await rename(source, target);
+    }
+    if (await pathExists(file)) {
+      const first = `${file}.1`;
+      await unlinkIfExists(first);
+      await rename(file, first);
+    }
+  }
+
+  async function appendBatch(lines) {
+    let currentSize = 0;
+    try {
+      currentSize = (await stat(file)).size;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+
+    let parts = [];
+    let partsBytes = 0;
+    const writeParts = async () => {
+      if (!parts.length) return;
+      await appendFile(file, parts.join(''), 'utf8');
+      currentSize += partsBytes;
+      parts = [];
+      partsBytes = 0;
+    };
+
+    for (const line of lines) {
+      const lineBytes = Buffer.byteLength(line);
+      if (
+        maxFileBytes > 0
+        && currentSize + partsBytes > 0
+        && currentSize + partsBytes + lineBytes > maxFileBytes
+      ) {
+        await writeParts();
+        if (currentSize > 0) {
+          await rotateFiles();
+          currentSize = 0;
+        }
+      }
+      parts.push(line);
+      partsBytes += lineBytes;
+    }
+    await writeParts();
+  }
+
   function drainPending() {
     if (!pending.length) return writeChain;
     const batch = pending;
     pending = [];
-    const text = batch.join('');
     writeChain = writeChain
-      .then(() => appendFile(file, text, 'utf8'))
+      .then(() => appendBatch(batch))
       .catch(() => {
         // 日志失败不能影响路由主流程；后续 batch 仍继续尝试写入。
       });
@@ -193,7 +302,7 @@ export function createUsageLogger(config = {}) {
     file,
     log(entry) {
       if (!entry || closed) return;
-      entries.push(entry);
+      appendEntry(entry);
       aggregateCache.clear();
       pending.push(JSON.stringify(entry) + '\n');
       scheduleFlush();
@@ -208,7 +317,7 @@ export function createUsageLogger(config = {}) {
       });
       const cached = aggregateCache.get(key);
       if (cached) return cached;
-      const stats = aggregateUsage(entries, filters);
+      const stats = aggregateUsage(orderedEntries(), filters);
       aggregateCache.set(key, stats);
       return stats;
     },
@@ -292,9 +401,24 @@ export function createRequestTracker(model, { streamed = false, pricing = null }
 
 export function readUsageLines(file) {
   if (!file || !existsSync(file)) return [];
-  const lines = readFileSync(file, 'utf8').split('\n');
+  return parseUsageLines(readFileSync(file, 'utf8'));
+}
+
+function positiveInteger(value, fallback, maximum) {
+  return Number.isSafeInteger(value) && value > 0
+    ? Math.min(value, maximum)
+    : fallback;
+}
+
+function nonNegativeInteger(value, fallback, maximum) {
+  return Number.isSafeInteger(value) && value >= 0
+    ? Math.min(value, maximum)
+    : fallback;
+}
+
+function parseUsageLines(text) {
   const out = [];
-  for (const line of lines) {
+  for (const line of String(text ?? '').split('\n')) {
     const t = line.trim();
     if (!t) continue;
     try {
@@ -304,6 +428,79 @@ export function readUsageLines(file) {
     }
   }
   return out;
+}
+
+function readUsageHistory(file, { maxFiles, maxBytes }) {
+  const candidates = [
+    file,
+    ...Array.from({ length: maxFiles }, (_, index) => `${file}.${index + 1}`)
+  ].filter((candidate) => existsSync(candidate));
+  const chunks = [];
+  let remaining = maxBytes;
+  for (const candidate of candidates) {
+    if (remaining <= 0) break;
+    const size = statSync(candidate).size;
+    if (size <= 0) continue;
+    const requestedBytes = Math.min(size, remaining);
+    const text = readTailText(candidate, requestedBytes);
+    remaining -= requestedBytes;
+    if (!text) continue;
+    chunks.push(parseUsageLines(text));
+  }
+  chunks.reverse();
+  return chunks.flat();
+}
+
+function readTailText(file, maxBytes) {
+  const size = statSync(file).size;
+  const length = Math.min(size, maxBytes);
+  const start = Math.max(0, size - length);
+  const buffer = Buffer.allocUnsafe(length);
+  const handle = openSync(file, 'r');
+  let bytesRead = 0;
+  try {
+    bytesRead = readSync(handle, buffer, 0, length, start);
+  } finally {
+    closeSync(handle);
+  }
+  let text = buffer.subarray(0, bytesRead).toString('utf8');
+  if (start > 0) {
+    const firstNewline = text.indexOf('\n');
+    if (firstNewline < 0) return '';
+    text = text.slice(firstNewline + 1);
+  }
+  return text;
+}
+
+async function pathExists(file) {
+  try {
+    await stat(file);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function unlinkIfExists(file) {
+  try {
+    await unlink(file);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+}
+
+async function removeExpiredRotations(file, maxFiles) {
+  const directory = path.dirname(file);
+  const basename = path.basename(file);
+  const prefix = `${basename}.`;
+  const names = await readdir(directory);
+  await Promise.all(names.map(async (name) => {
+    if (!name.startsWith(prefix)) return;
+    const suffix = name.slice(prefix.length);
+    if (!/^\d+$/.test(suffix) || Number(suffix) <= maxFiles) return;
+    await unlinkIfExists(path.join(directory, name));
+  }));
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;

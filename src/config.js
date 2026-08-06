@@ -37,7 +37,11 @@ export const DEFAULT_CONFIG = {
   usageLog: {
     enabled: false,
     file: 'usage/requests.jsonl',
-    flushDelayMs: 10
+    flushDelayMs: 10,
+    maxFileBytes: 8388608,
+    maxFiles: 3,
+    maxEntries: 50000,
+    startupMaxBytes: 8388608
   },
   providerStickiness: {
     enabled: true,

@@ -161,5 +161,9 @@ test('loads usageLog defaults and merges overrides', () => {
   assert.equal(cfg.usageLog.enabled, false);
   assert.equal(cfg.usageLog.file, 'x/y.jsonl');
   assert.equal(cfg.usageLog.flushDelayMs, 10);
+  assert.equal(cfg.usageLog.maxFileBytes, 8388608);
+  assert.equal(cfg.usageLog.maxFiles, 3);
+  assert.equal(cfg.usageLog.maxEntries, 50000);
+  assert.equal(cfg.usageLog.startupMaxBytes, 8388608);
   rmSync(dir, { recursive: true, force: true });
 });

@@ -171,7 +171,11 @@ opencode-api-adapter --config "C:\path\to\config.json"
   "usageLog": {
     "enabled": true,
     "file": "usage/requests.jsonl",
-    "flushDelayMs": 10
+    "flushDelayMs": 10,
+    "maxFileBytes": 8388608,
+    "maxFiles": 3,
+    "maxEntries": 50000,
+    "startupMaxBytes": 8388608
   }
 }
 ```
@@ -180,7 +184,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 日志还包含本地 HMAC 生成的 `conversation_key_hash`、`model_visible_prefix_hash`、`tool_schema_hash`、`provider_endpoint_hash` 以及 route/translator 版本，用于定位发布后的缓存命中变化；不会记录完整 Prompt、API key、图片或原始工具输出。
 
-启动时 JSONL 只读取一次；新记录立即进入内存统计，并在 `flushDelayMs` 后异步批量追加到磁盘。相同过滤条件的聚合结果按日志版本缓存，管理页轮询不会反复同步读取和解析完整文件；热重启/优雅停止会先 flush 未落盘记录。
+启动时只读取活动文件和最多 `maxFiles` 个轮转文件的最近 `startupMaxBytes` 字节，并丢弃不完整 JSONL 首行；新记录立即进入最多 `maxEntries` 条的内存快照，在 `flushDelayMs` 后异步批量追加到磁盘。活动文件超过 `maxFileBytes` 后按 `.1`、`.2` … 轮转并删除更旧文件；相同过滤条件的聚合结果按日志版本缓存，管理页轮询不会反复同步读取和解析完整文件；热重启/优雅停止会先 flush 未落盘记录。内存上限只影响进程内聚合，磁盘保留的 JSONL 记录不会因内存淘汰而丢失。
 
 查询统计：
 

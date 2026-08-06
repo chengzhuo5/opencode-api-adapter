@@ -592,3 +592,11 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **性能证据**：本地 mock 的 4 × 4 MiB 工具输出基线为总耗时 318 ms、最大事件循环延迟 283 ms；优化后为 174 ms、31 ms。线上 `compress.enabled=false` 仍按用户决定保持关闭。
 - **验证**：新增独立 writer 收敛、半开取消 HTTP/TCP 回归与 Chat 同 URL 双凭据粘性回归；定向和全套测试均为 **245/245**，`npm run smoke`、GPT→DeepSeek→GPT→DeepSeek 与反向四跳 mock、`npm pack --dry-run`、全部 `node --check`、`git diff --check` 均通过。
 - **约束复核**：已阅读并纳入 `docs/superpowers/specs/2026-08-06-deepseek-cache-safe-router-recommendations.md`（commit `45839bc`）；本阶段未改变 DeepSeek hit/miss usage、Provider 粘性、确定性工具顺序/模型前缀、稳定 checkpoint 或按实际费用评估逻辑，也未记录 API key、完整 Prompt、图片或原始工具输出。
+
+## 2026-08-06：Usage Store 有界化（本阶段）
+
+- **根因**：`usageLog.js` 启动同步读取并解析完整 `requests.jsonl`，`entries` 进程内无限增长；管理页虽然已使用内存聚合，但日志历史越大，启动和内存成本仍线性增长，活动文件也没有轮转。
+- **修复**：新增 `usageLog.maxFileBytes`（默认 8 MiB）、`maxFiles`（默认 3）、`maxEntries`（默认 50,000）与 `startupMaxBytes`（默认 8 MiB）。写入链按 JSONL 行切分批次，超过活动文件上限后串行轮转 `.1`…`.N`，删除过期后缀；独立写入仍由原有 Promise 链串行化。
+- **启动成本**：启动只从活动/轮转文件尾部读取有界字节，并丢弃截断的首行；保留的记录按时间顺序合并后再进入有界 ring snapshot。内存淘汰只影响进程内 `/v1/usage` 聚合，不删除已持久化 JSONL。
+- **验证**：新增轮转批量写入、旧后缀清理、内存上限、启动 tail 完整行回归；Usage Store/配置定向测试 **24/24** 通过。当前线上日志约 759 KiB，低于默认 8 MiB 上限，未主动轮转/删除已有日志。
+- **缓存约束**：此阶段只限于本地 usage 观测与持久化，不改变模型可见请求、DeepSeek hit/miss 字段、Provider 粘性、工具顺序或压缩 checkpoint。

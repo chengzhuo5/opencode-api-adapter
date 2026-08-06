@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -217,6 +223,96 @@ test('usage logger caches aggregates until a new entry invalidates them', async 
   assert.notEqual(invalidated, first);
   assert.equal(invalidated.totalRequests, 2);
   await logger.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('usage logger bounds its in-memory snapshot without dropping persisted records', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-memory-bound-'));
+  const file = path.join(dir, 'requests.jsonl');
+  const logger = createUsageLogger({
+    usageLog: {
+      enabled: true,
+      file,
+      maxEntries: 2,
+      startupMaxBytes: 1024 * 1024
+    }
+  });
+  for (let index = 0; index < 3; index++) {
+    logger.log({
+      ts: new Date(Date.now() + index).toISOString(),
+      model: `m${index}`,
+      endpoint: 'https://x',
+      ok: true
+    });
+  }
+  assert.equal(logger.aggregate().totalRequests, 2);
+  assert.deepEqual(Object.keys(logger.aggregate().perModel), ['m1', 'm2']);
+  await logger.close();
+  assert.equal(readUsageLines(file).length, 3, 'the memory cap must not truncate the JSONL log');
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('usage logger rotates files in the serialized write chain and reloads retained history', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-rotation-'));
+  const file = path.join(dir, 'requests.jsonl');
+  const config = {
+    usageLog: {
+      enabled: true,
+      file,
+      flushDelayMs: 0,
+      maxFileBytes: 220,
+      maxFiles: 2,
+      maxEntries: 100,
+      startupMaxBytes: 1024 * 1024
+    }
+  };
+  writeFileSync(`${file}.7`, '{"stale":true}\n');
+  const logger = createUsageLogger(config);
+  for (let index = 0; index < 8; index++) {
+    logger.log({
+      ts: new Date(Date.now() + index).toISOString(),
+      model: `m${index}`,
+      endpoint: 'https://provider.test/v1/responses',
+      ok: true
+    });
+  }
+  await logger.flush();
+  await logger.close();
+  assert.equal(existsSync(`${file}.1`), true);
+  assert.equal(existsSync(`${file}.2`), true);
+  assert.equal(existsSync(`${file}.3`), false);
+  const restarted = createUsageLogger(config);
+  const stats = restarted.aggregate();
+  assert.ok(stats.totalRequests > 0 && stats.totalRequests < 8);
+  assert.ok(Object.hasOwn(stats.perModel, 'm7'), 'newest entries must survive rotation and restart');
+  await restarted.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('usage logger limits startup reads to complete recent JSONL records', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'usage-startup-bound-'));
+  const file = path.join(dir, 'requests.jsonl');
+  const lines = Array.from({ length: 20 }, (_, index) => JSON.stringify({
+    ts: new Date(Date.now() + index).toISOString(),
+    model: `m${index}`,
+    endpoint: 'https://x',
+    ok: true,
+    padding: 'x'.repeat(80)
+  }) + '\n');
+  writeFileSync(file, lines.join(''));
+  const logger = createUsageLogger({
+    usageLog: {
+      enabled: true,
+      file,
+      maxEntries: 100,
+      startupMaxBytes: Buffer.byteLength(lines.at(-1)) * 3
+    }
+  });
+  const stats = logger.aggregate();
+  assert.ok(stats.totalRequests >= 1 && stats.totalRequests <= 3);
+  assert.ok(Object.hasOwn(stats.perModel, 'm19'));
+  await logger.close();
+  assert.equal(readFileSync(file, 'utf8'), lines.join(''));
   rmSync(dir, { recursive: true, force: true });
 });
 

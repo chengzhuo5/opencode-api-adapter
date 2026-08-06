@@ -170,7 +170,11 @@ The layers complement each other:
   "usageLog": {
     "enabled": true,
     "file": "usage/requests.jsonl",
-    "flushDelayMs": 10
+    "flushDelayMs": 10,
+    "maxFileBytes": 8388608,
+    "maxFiles": 3,
+    "maxEntries": 50000,
+    "startupMaxBytes": 8388608
   }
 }
 ```
@@ -179,7 +183,7 @@ Each `/v1/responses` request appends one JSON line containing timestamp, model, 
 
 The log also contains local-HMAC `conversation_key_hash`, `model_visible_prefix_hash`, `tool_schema_hash`, and `provider_endpoint_hash` values plus route/translator versions. It never stores full prompts, API keys, images, or raw tool output.
 
-The JSONL file is loaded once at startup. New records become visible to in-memory stats immediately and are appended to disk in asynchronous batches after `flushDelayMs`. Aggregates are version-cached, so admin polling no longer synchronously rereads and reparses the whole file; hot reload and graceful shutdown flush pending records.
+At startup the router reads only the active file and the newest `maxFiles` rotated files, bounded by `startupMaxBytes`, dropping an incomplete first JSONL line when a tail starts mid-file. New records become visible immediately in a bounded in-memory snapshot of `maxEntries` entries and are appended to disk in asynchronous batches after `flushDelayMs`. Once the active file exceeds `maxFileBytes`, it rotates through `.1`, `.2`, and so on, deleting older generations. The memory cap affects only in-process aggregates; persisted JSONL records are not dropped by eviction. Aggregates are version-cached, so admin polling no longer synchronously rereads and reparses the whole file; hot reload and graceful shutdown flush pending records.
 
 Query the stats:
 
