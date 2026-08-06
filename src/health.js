@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { logEvent } from './logger.js';
-import { resolveRoute } from './routes.js';
+import { getModelEntry, listRoutedModels, resolveRoute } from './routes.js';
 import { createAbortScope, readWithAbort } from './requestLifecycle.js';
 
 /**
@@ -37,11 +37,7 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
   const collect = () => {
     const targets = [];
     const explicit = Array.isArray(hc.models) ? hc.models : null;
-    const models = explicit || Object.entries(config.models || {})
-      .filter(([, entry]) => entry && (
-        typeof entry.endpoint === 'string' || Array.isArray(entry.endpoint)
-      ))
-      .map(([model]) => model);
+    const models = explicit || discoverCustomEndpointModels();
     for (const model of models) {
       let route;
       try {
@@ -60,6 +56,30 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
     }
     return targets;
   };
+
+  function discoverCustomEndpointModels() {
+    const models = new Set();
+    for (const [model, entry] of Object.entries(config.models || {})) {
+      if (entry && (typeof entry.endpoint === 'string' || Array.isArray(entry.endpoint))) {
+        models.add(model);
+      }
+    }
+    // Expand wildcard model entries through the same catalog/model metadata
+    // set used by routing. The pattern itself must never be sent upstream as
+    // a model name (for example, "gpt-*" is configuration syntax only).
+    try {
+      for (const model of listRoutedModels(config)) {
+        const entry = getModelEntry(config, model);
+        if (entry && (typeof entry.endpoint === 'string' || Array.isArray(entry.endpoint))) {
+          models.add(model);
+        }
+      }
+    } catch {
+      // A malformed unrelated route should not disable health checks for
+      // already-discoverable exact endpoints.
+    }
+    return [...models];
+  }
 
   const refreshWatched = () => {
     watched.clear();

@@ -643,3 +643,10 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **验证**：全套测试 **259/259**；`npm run smoke` 通过；`npm pack --dry-run` 通过；`src/` 与 `admin/` 全量 `node --check` 通过；`git diff --check` 通过。
 - **本轮修复汇总**：Anthropic 流式 usage 合并、unsupported 非末 Provider 缓存、管理页 single-flight/隐藏暂停、热加载有界 drain、升级模型的 unsupported/breaker 隔离，以及管理页小屏/focus 可访问性。
 - **线上部署**：Windows `CodexRouter` 服务仍运行旧 Node PID `49600`，`/api/status` 显示 `healthCount=2`、`compress.enabled=false`、`circuitBreaker.enabled=false`；新健康探测生命周期、drain 和升级模型隔离代码需管理员执行 `Restart-Service CodexRouter -Force` 后再核验。
+
+## 2026-08-06：健康探测覆盖 modelPatterns（本阶段）
+
+- **根因**：自动健康探测只扫描 `config.models` exact entries；`modelPatterns.gpt-*` 虽然实际路由到自定义 Provider，却没有任何主动探针和 `provider_health` 状态。
+- **修复**：`health.js` 通过 `listRoutedModels()` + `getModelEntry()` 展开已知模型元数据/目录中的 pattern 命中项；只发送真实模型名，不会把 `gpt-*` 配置语法发给上游；显式 `healthCheck.models` 仍保持最高优先级。
+- **验证**：新增 pattern Provider 探针回归，health 定向测试 **10/10** 通过。
+- **缓存约束**：探针仍使用固定最小请求，不注入会话、时间、随机字段，不改变 DeepSeek 模型可见前缀或正式请求路由。

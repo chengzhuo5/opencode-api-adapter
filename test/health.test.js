@@ -239,6 +239,39 @@ test('health monitor scans single custom endpoints without an explicit model lis
   assert.equal(monitor.status()[0].endpoint, 'https://single.test/v1/responses');
 });
 
+test('health monitor discovers custom endpoints declared by model patterns', async () => {
+  const calls = [];
+  const monitor = createHealthMonitor({
+    config: {
+      apiBaseUrl: null,
+      modelPatterns: {
+        'gpt-*': {
+          upstream: 'responses',
+          endpoint: 'https://pattern.test/v1',
+          apiKey: 'pattern-key'
+        }
+      },
+      healthCheck: {
+        enabled: true,
+        intervalMs: 60_000,
+        timeoutMs: 5_000
+      }
+    },
+    fetchImpl: async (url, init) => {
+      calls.push({ url, model: JSON.parse(init.body).model });
+      return new Response(JSON.stringify({ id: 'r1', model: JSON.parse(init.body).model }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  });
+  const result = await monitor.probeAll();
+  assert.ok(result.length > 0, 'pattern providers must produce probe targets');
+  assert.ok(calls.every((call) => call.url === 'https://pattern.test/v1/responses'));
+  assert.ok(calls.every((call) => call.model !== 'gpt-*'), 'wildcard syntax must not be sent upstream');
+  assert.ok(monitor.status().some((entry) => entry.endpoint === 'https://pattern.test/v1/responses'));
+});
+
 test('health monitor cancels non-stream response bodies after probing', async () => {
   let cancelled = false;
   const monitor = createHealthMonitor({
