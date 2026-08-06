@@ -67,10 +67,16 @@ export async function translateAnthropicStreamToResponses(body, requestModel, wr
     } catch {
       continue;
     }
-    if (event.type === 'message_delta' && event.usage && !response.usage) {
-      response.usage = event.usage;
-      response.input_tokens = event.usage.input_tokens ?? 0;
-      response.output_tokens = event.usage.output_tokens ?? 0;
+    if (event.type === 'message_start' && event.message?.usage) {
+      response.usage = { ...(response.usage || {}), ...event.message.usage };
+      response.input_tokens = response.usage.input_tokens ?? response.input_tokens;
+      response.output_tokens = response.usage.output_tokens ?? response.output_tokens;
+      continue;
+    }
+    if (event.type === 'message_delta' && event.usage) {
+      response.usage = { ...(response.usage || {}), ...event.usage };
+      response.input_tokens = response.usage.input_tokens ?? response.input_tokens;
+      response.output_tokens = response.usage.output_tokens ?? response.output_tokens;
       continue;
     }
     if (event.type === 'content_block_start') {

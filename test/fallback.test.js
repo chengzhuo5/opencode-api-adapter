@@ -504,6 +504,51 @@ test('unsupported cache is per provider and does not poison other models', async
   clearUnsupportedCache();
 });
 
+test('unsupported cache skips a permanently unsupported non-final provider', async () => {
+  clearUnsupportedCache();
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push({ url, model: body.model });
+    if (url.includes('provider-a')) {
+      return new Response(
+        JSON.stringify({ error: { message: 'model not supported by this endpoint' } }),
+        { status: 400, headers: { 'content-type': 'application/json' } }
+      );
+    }
+    return new Response(
+      JSON.stringify({ id: 'resp_ok', object: 'response', model: body.model }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  };
+  const cfg = {
+    apiKey: 'k',
+    apiBaseUrl: null,
+    models: {
+      'gpt-5.6-sol': {
+        upstream: 'responses',
+        endpoint: ['https://provider-a/v1', 'https://provider-b/v1'],
+        apiKey: 'ek'
+      }
+    }
+  };
+  await withServer(cfg, fetchImpl, async (base) => {
+    const make = () => fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-sol', stream: false, input: [] })
+    });
+    assert.equal((await make()).status, 200);
+    assert.equal((await make()).status, 200);
+  });
+  assert.deepEqual(calls.map((call) => call.url), [
+    'https://provider-a/v1/responses',
+    'https://provider-b/v1/responses',
+    'https://provider-b/v1/responses'
+  ]);
+  clearUnsupportedCache();
+});
+
 
 test('single provider breaker open still probes upstream instead of rejecting', async () => {
   const calls = [];

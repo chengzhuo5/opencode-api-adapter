@@ -609,3 +609,11 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **验证**：新增单 endpoint 覆盖、非流 body 释放、慢周期不重叠、stop abort/忽略 retired result 四个回归；health 定向 9/9、全套 **251/251**、smoke、双向四跳 mock、`node --check` 与 `git diff --check` 均通过。
 - **缓存约束**：健康探针仍只发送固定最小 probe，不注入会话/时间/随机字段；本阶段未改变 DeepSeek 模型可见前缀、usage hit/miss、Provider 粘性或协议转换顺序。
 - **部署坑**：commit `e525b5e`、`552953c` 已推送，但本次 `sudo Restart-Service CodexRouter` 在 Windows 强制新窗口/UAC 模式下挂起；`sudo --inline` 明确被系统策略拒绝。当前服务 PID `49600` 仍是旧代次，端口健康但尚未加载本阶段源码。下一次需用户在可见的管理员 PowerShell 执行 `Restart-Service CodexRouter -Force`，再核对 `/api/status` 与进程启动时间。
+
+## 2026-08-06：Messages usage 合并、unsupported Provider 缓存与管理页轮询（本阶段）
+
+- **Anthropic 流式 usage 根因**：Messages `message_start` 先给输入 token，末尾 `message_delta` 可能只给输出 token；旧转换器只在 `message_delta` 写入 usage，导致 completed 顶层 `input_tokens` 丢失。现在按事件顺序合并 usage，后续非空字段覆盖同名字段，保留早期输入与缓存维度。
+- **Responses unsupported 缓存根因**：`providerExecution` 只在最后一个 Responses Provider 上缓存明确的 `model not supported`，多 Provider 路由会每轮重复尝试永久不兼容的首个端点。现在对任何明确 unsupported 的 Provider 按 `model::endpoint` 缓存，仍保持 5 分钟 TTL、严格错误文本匹配，不缓存瞬时 401/500/网络失败。
+- **管理页轮询**：新增 `admin/polling.js` 的 `createPollGate`；状态、用量、Codex、配置请求共享 single-flight promise，标签页隐藏时暂停后台状态/用量刷新，重新可见后立即刷新，避免服务重启期间请求堆积。
+- **回归证据**：新增 Anthropic `message_start`/`message_delta` usage 回归、unsupported 非末 Provider 回归及 3 个 poll gate 单测；全套测试 **256/256**，`node --check admin/app.js admin/polling.js`、`git diff --check` 均通过。
+- **缓存约束**：这些改动只修复 usage 观测、Provider 尝试选择和管理面轮询，不改变 DeepSeek 模型可见前缀、工具顺序、Provider 粘性、稳定压缩 checkpoint 或 hit/miss 字段。

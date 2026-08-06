@@ -1,4 +1,5 @@
 import { createApiClient } from './apiClient.js';
+import { createPollGate } from './polling.js';
 
 (function () {
   'use strict';
@@ -26,6 +27,7 @@ import { createApiClient } from './apiClient.js';
       try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
     }
   });
+  const pagePaused = () => document.hidden === true;
 
   async function api(path, options = {}) {
     try {
@@ -262,7 +264,7 @@ import { createApiClient } from './apiClient.js';
 
   /* ---------- config ---------- */
 
-  async function loadCodex() {
+  const loadCodex = createPollGate(async function loadCodexImpl() {
     try {
       const data = await api('/api/codex');
       state.codex = data.enabled ? data.status : null;
@@ -270,7 +272,7 @@ import { createApiClient } from './apiClient.js';
     } catch {
       state.codex = null;
     }
-  }
+  });
 
   function renderCodex() {
     const s = state.codex;
@@ -358,7 +360,7 @@ import { createApiClient } from './apiClient.js';
     }
   }
 
-  async function loadConfig() {
+  const loadConfig = createPollGate(async function loadConfigImpl() {
     if (state.configDirty) return;
     try {
       const data = await api('/api/config');
@@ -368,7 +370,7 @@ import { createApiClient } from './apiClient.js';
     } catch (error) {
       toast('读取配置失败: ' + error.message, 'err');
     }
-  }
+  });
 
   async function saveConfig() {
     const text = $('#configEditor').value;
@@ -404,7 +406,7 @@ import { createApiClient } from './apiClient.js';
 
   let offlineSince = null;
 
-  async function pollStatus() {
+  const pollStatus = createPollGate(async function pollStatusImpl() {
     try {
       const data = await api('/api/status');
       state.status = data;
@@ -425,9 +427,9 @@ import { createApiClient } from './apiClient.js';
         $('#overviewCards').innerHTML = '<div class="card"><div class="label">服务状态</div><div class="value">离线</div><div class="sub">等待重连</div></div>';
       }
     }
-  }
+  }, { isPaused: pagePaused });
 
-  async function pollUsage() {
+  const pollUsage = createPollGate(async function pollUsageImpl() {
     if (currentView() !== 'usage') return;
     try {
       const data = await api('/v1/usage?days=' + state.days);
@@ -437,7 +439,7 @@ import { createApiClient } from './apiClient.js';
     } catch {
       // 状态轮询会提示连接问题
     }
-  }
+  }, { isPaused: pagePaused });
 
   /* ---------- navigation ---------- */
 
@@ -477,8 +479,13 @@ import { createApiClient } from './apiClient.js';
   $('#usageDays').addEventListener('change', (e) => { state.days = Number(e.target.value); pollUsage(); });
 
   window.addEventListener('hashchange', navigate);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    pollStatus();
+    if (currentView() === 'usage') pollUsage();
+  });
   navigate();
   pollStatus();
-  setInterval(pollStatus, 3000);
-  setInterval(pollUsage, 10000);
+  setInterval(() => pollStatus(), 3000);
+  setInterval(() => pollUsage(), 10000);
 })();

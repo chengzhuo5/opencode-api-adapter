@@ -15,6 +15,7 @@
 - 通配符模型配置：`modelPatterns` 用 `gpt-*` 这类模式统一管理一批模型，精确模型条目优先于通配符。
 - 请求日志与用量统计：每次请求追加 JSONL（模型/provider/状态/token/缓存/延迟），`GET /v1/usage` 返回汇总、按模型/provider/天分组的统计。
 - 内置管理页面与桌面 App：浏览器访问 `http://127.0.0.1:15722/admin` 或运行 ewvjs 打包的桌面壳，支持查看状态、编辑配置、用量统计与热重启。
+- 管理页面刷新采用 single-flight：状态、用量、Codex 与配置读取不会重叠请求；浏览器标签页隐藏时暂停后台轮询，重新显示后立即补一次刷新。
 - Codex 配置管理：一键在 `~/.codex/config.toml` 中加入 `minar_route` provider 并切换 model_provider/model，注释保留原值、每次修改前时间戳备份、还原优先用注释字段，失败才提示从备份恢复。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
 - 客户端断开会沿 Request Lifecycle 立即取消当前 Provider attempt 与锁定的 SSE reader；取消不计入 Provider 熔断失败，首个已读取事件也不会滞留到下一 chunk/keep-alive。

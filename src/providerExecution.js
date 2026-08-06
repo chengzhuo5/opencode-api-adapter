@@ -253,7 +253,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
         return;
       }
       recordFailure(options, breakerKey, permit, provider.endpoint, upstream.status, 'http_error');
-      if (last && await isUnsupportedResponse(upstream)) {
+      if (await isUnsupportedResponse(upstream)) {
         rememberUnsupported(displayModel, provider.endpoint);
       }
       logResponsesFallback(config, displayModel, provider, nextProvider, 'http_error', upstream.status);

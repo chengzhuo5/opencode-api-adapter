@@ -15,6 +15,7 @@
 - Wildcard model config: `modelPatterns` applies one provider block to many models (`gpt-*`); exact `models` entries always win.
 - Request log and usage stats: every request appends one JSONL line (model/provider/status/tokens/cache/latency), and `GET /v1/usage` returns totals plus per-model/provider/day breakdowns.
 - Built-in admin UI and desktop app: open `http://127.0.0.1:15722/admin` in a browser, or run the ewvjs-packaged desktop shell, to view status, edit config, inspect usage, and hot-restart the router.
+- Admin refreshes are single-flight: status, usage, Codex, and config reads never overlap; background polling pauses while the tab is hidden and refreshes immediately when it becomes visible again.
 - Codex config management: one click adds a `minar_route` provider to `~/.codex/config.toml` and switches `model_provider`/`model`, keeping the originals as commented markers, backing up before every change, and restoring from markers first (timestamped backups only with explicit user confirmation).
 - Structured console logs report multimodal and API fallback events without logging API keys, full prompts, or image data.
 - Client disconnects propagate through the Request Lifecycle to cancel the current provider attempt and locked SSE reader immediately; cancellations do not count as provider-breaker failures, and an already-read first event is not held until the next chunk or keep-alive.

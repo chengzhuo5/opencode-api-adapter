@@ -64,6 +64,10 @@ _Avoid_: unbounded buffering, socket-global timeout
 The pre-routing policy that keeps the admin UI and management APIs local by default, requires a constant-time Bearer token on non-loopback listeners, and rejects untrusted browser origins before state changes.
 _Avoid_: CORS-only protection, inline secrets
 
+**Admin Poll Gate**:
+The browser-side single-flight and visibility gate that collapses overlapping status/usage/config refreshes and pauses background polling while the tab is hidden.
+_Avoid_: interval-only polling, duplicate refreshes
+
 **Request Lifecycle**:
 The client-bound abort scope propagated through Provider Execution, per-attempt deadlines, streaming readers, non-streaming retries, and health-probe retirement. Client cancellation releases upstream work without counting as Provider failure.
 _Avoid_: orphan upstream streams, breaker pollution
