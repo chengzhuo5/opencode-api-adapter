@@ -145,7 +145,13 @@ export function listRoutedModels(config) {
     ...Object.keys(MODEL_META)
   ]);
   return [...ids].filter((id) => {
-    const upstream = config.models?.[id]?.upstream ?? DEFAULT_MODEL_ROUTES[id];
-    return upstream === 'responses' || upstream === 'chat' || upstream === 'messages';
+    try {
+      resolveRoute(config, id);
+      return true;
+    } catch (error) {
+      const configured = Object.keys(getModelEntry(config, id)).length > 0;
+      if (configured) throw error;
+      return false;
+    }
   });
 }

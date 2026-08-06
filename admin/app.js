@@ -376,7 +376,7 @@ import { createApiClient } from './apiClient.js';
     $('#btnSave').disabled = true;
     try {
       const res = await api('/api/reload', { method: 'POST', body: text });
-      toast(res.message || '配置已保存并热加载', 'ok');
+      toast(res.message || '配置已校验并开始热加载', 'ok');
       state.configDirty = false;
       markRestarting();
     } catch (error) {

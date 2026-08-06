@@ -42,6 +42,23 @@ test('recovers via half-open probe after timeout', () => {
   assert.equal(cb.isAvailable(key), true, 'half-open success threshold closes breaker');
 });
 
+test('half-open probe success releases the next probe permit', () => {
+  const cb = createCircuitBreaker({ ...cfg, circuitBreaker: { ...cfg.circuitBreaker, timeoutMs: 0 } });
+  const key = 'gpt-5.6-luna::https://x/v1/responses';
+  cb.recordFailure(key);
+  cb.recordFailure(key);
+  cb.recordFailure(key);
+  const firstProbe = cb.allow(key);
+  assert.deepEqual(firstProbe, { allowed: true, usedHalfOpenPermit: true });
+  assert.equal(cb.allow(key).allowed, false, 'first probe occupies the only half-open permit');
+  cb.recordSuccess(key, firstProbe.usedHalfOpenPermit);
+  const secondProbe = cb.allow(key);
+  assert.deepEqual(secondProbe, { allowed: true, usedHalfOpenPermit: true }, 'success result releases the next probe permit');
+  assert.equal(cb.allow(key).allowed, false, 'second probe occupies the only half-open permit');
+  cb.recordSuccess(key, secondProbe.usedHalfOpenPermit);
+  assert.equal(cb.isAvailable(key), true, 'second successful probe closes breaker');
+});
+
 test('half-open failure reopens breaker', () => {
   const cb = createCircuitBreaker({ ...cfg, circuitBreaker: { ...cfg.circuitBreaker, timeoutMs: 0 } });
   const key = 'gpt-5.6-luna::https://x/v1/responses';
@@ -87,6 +104,23 @@ test('statuses expose breaker state', () => {
   assert.equal(statuses[0].key, key);
   assert.equal(statuses[0].state, 'closed');
   assert.equal(statuses[0].failedRequests, 1);
+});
+
+test('keyOf builds the breaker key from model and endpoint', () => {
+  const cb = createCircuitBreaker(cfg);
+  assert.equal(
+    cb.keyOf('gpt-5.6-luna', 'https://x/v1/responses'),
+    'gpt-5.6-luna::https://x/v1/responses'
+  );
+});
+
+test('keyOf isolates credentials that share the same endpoint without exposing them', () => {
+  const cb = createCircuitBreaker(cfg);
+  const primary = cb.keyOf('gpt-5.6-luna', 'https://x/v1/responses', 'primary-secret');
+  const backup = cb.keyOf('gpt-5.6-luna', 'https://x/v1/responses', 'backup-secret');
+  assert.notEqual(primary, backup);
+  assert.equal(primary.includes('primary-secret'), false);
+  assert.equal(backup.includes('backup-secret'), false);
 });
 
 test('reset clears breaker state', () => {

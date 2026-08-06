@@ -116,6 +116,15 @@ export function createProviderAffinity(config = {}, {
 } = {}) {
   const options = normalizeConfig(config);
   const bindings = new Map();
+  const providerKey = (provider) => {
+    if (!provider?.endpoint) return null;
+    return createHmac('sha256', secret)
+      .update('provider\0')
+      .update(String(provider.endpoint))
+      .update('\0')
+      .update(String(provider.apiKey ?? ''))
+      .digest('hex');
+  };
 
   function keyFor(body, headers) {
     if (!options.enabled || !body?.model) return null;
@@ -147,7 +156,7 @@ export function createProviderAffinity(config = {}, {
       bindings.delete(key);
       return false;
     }
-    const index = route.providers.findIndex((provider) => provider.endpoint === binding.endpoint);
+    const index = route.providers.findIndex((provider) => providerKey(provider) === binding.providerKey);
     if (index < 0) return false;
     if (index > 0) {
       const providers = [...route.providers];
@@ -162,8 +171,12 @@ export function createProviderAffinity(config = {}, {
     return true;
   }
 
-  function recordSuccess(key, endpoint) {
-    if (!options.enabled || !key || !endpoint) return;
+  function recordSuccess(key, provider) {
+    const normalized = typeof provider === 'string'
+      ? { endpoint: provider, apiKey: '' }
+      : provider;
+    const identity = providerKey(normalized);
+    if (!options.enabled || !key || !identity) return;
     removeExpired();
     if (bindings.has(key)) bindings.delete(key);
     while (bindings.size >= options.maxEntries) {
@@ -171,7 +184,10 @@ export function createProviderAffinity(config = {}, {
       if (oldest === undefined) break;
       bindings.delete(oldest);
     }
-    bindings.set(key, { endpoint, expiresAt: now() + options.ttlMs });
+    bindings.set(key, {
+      providerKey: identity,
+      expiresAt: now() + options.ttlMs
+    });
   }
 
   return {

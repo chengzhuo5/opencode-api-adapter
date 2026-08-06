@@ -144,21 +144,33 @@ export function createRouter(config, {
       }
       if (req.method === 'POST' && url.pathname === '/api/reload') {
         const text = await readRawBody(req, config);
-        const error = onReloadValidate ? onReloadValidate(text) : 'reload not configured';
-        if (error) {
-          sendJson(res, 400, { ok: false, error });
+        const validation = onReloadValidate
+          ? await onReloadValidate(text)
+          : 'reload not configured';
+        if (typeof validation === 'string' && validation) {
+          sendJson(res, 400, { ok: false, error: validation });
           return;
         }
-        sendJson(res, 200, { ok: true, message: '配置已保存，正在热加载' });
+        sendJson(res, 200, { ok: true, message: '配置已校验，正在热加载' });
         setImmediate(() => {
-          onReloadCommit?.().catch((e) => logEvent(config, { event: 'admin_reload_failed', reason: String(e?.message || e).slice(0, 300) }));
+          Promise.resolve()
+            .then(() => onReloadCommit?.(validation))
+            .catch((e) => logEvent(config, {
+              event: 'admin_reload_failed',
+              reason: String(e?.message || e).slice(0, 300)
+            }));
         });
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/restart') {
         sendJson(res, 200, { ok: true, message: '正在重启路由服务' });
         setImmediate(() => {
-          onRestartCommit?.().catch((e) => logEvent(config, { event: 'admin_restart_failed', reason: String(e?.message || e).slice(0, 300) }));
+          Promise.resolve()
+            .then(() => onRestartCommit?.())
+            .catch((e) => logEvent(config, {
+              event: 'admin_restart_failed',
+              reason: String(e?.message || e).slice(0, 300)
+            }));
         });
         return;
       }
@@ -231,7 +243,7 @@ export function createRouter(config, {
             affinityKey,
             cacheDiagnostics,
             signal: lifecycle.signal,
-            onProviderSuccess: (endpoint) => providerAffinity.recordSuccess(affinityKey, endpoint)
+            onProviderSuccess: (provider) => providerAffinity.recordSuccess(affinityKey, provider)
           });
         } catch (error) {
           if (!lifecycle.signal.aborted) {
@@ -299,8 +311,16 @@ function serveAdmin(res, urlPath, adminDir) {
 
 function reorderProvidersByHealth(route, health) {
   if (!route.providers || route.providers.length < 2) return;
-  const healthy = route.providers.filter((p) => !health.isUnhealthy(route.model, p.endpoint));
-  const down = route.providers.filter((p) => health.isUnhealthy(route.model, p.endpoint));
+  const healthy = route.providers.filter((p) => !health.isUnhealthy(
+    route.model,
+    p.endpoint,
+    p.apiKey
+  ));
+  const down = route.providers.filter((p) => health.isUnhealthy(
+    route.model,
+    p.endpoint,
+    p.apiKey
+  ));
   if (down.length) {
     const reordered = [...healthy, ...down];
     route.providers = reordered;
@@ -322,7 +342,8 @@ async function forward(res, body, route, config, fetchImpl, compression) {
       breaker: compression?.breaker,
       tracker: compression?.tracker,
       onProviderSuccess: compression?.onProviderSuccess,
-      cacheDiagnostics: compression?.cacheDiagnostics
+      cacheDiagnostics: compression?.cacheDiagnostics,
+      signal: compression?.signal
     });
     return;
   }

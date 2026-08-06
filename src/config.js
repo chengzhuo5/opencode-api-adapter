@@ -71,6 +71,10 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
   const abs = path.resolve(cwd, configPath);
   if (!existsSync(abs)) throw new Error(`config file not found: ${abs}`);
   const raw = JSON.parse(readFileSync(abs, 'utf8'));
+  return resolveConfig(raw, { env });
+}
+
+export function resolveConfig(raw, { env = process.env } = {}) {
   const management = {
     ...DEFAULT_CONFIG.management,
     ...(raw.management || {}),

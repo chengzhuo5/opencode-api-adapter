@@ -158,9 +158,9 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 The layers complement each other:
 
-- `providerStickiness` is enabled by default. A local HMAC affinity key keeps the same session/model on one Provider; a successful failover updates the binding for `ttlMs`. Provider recovery affects new sessions and does not switch an active long conversation back mid-session. No session, timestamp, or random field is injected into the model request.
-- `healthCheck` sends protocol-correct probes in parallel every `intervalMs` (Responses/Chat/Messages use their own path, request body, and authentication headers); failed providers move to the end of the candidate order for new sessions (`provider_health` events).
-- `circuitBreaker` is disabled by default (`enabled: false`); turn it on when needed. It is driven by real request outcomes, tracked per `model::endpoint`. A provider is tripped after `failureThreshold` consecutive failures, or once at least `minRequests` requests have an error rate above `errorRateThreshold`; after `timeoutMs` one half-open probe is allowed, and `successThreshold` consecutive probe successes close the breaker. State changes emit `provider_circuit` log events.
+- `providerStickiness` is enabled by default. A local HMAC affinity key keeps the same session/model on one Provider; a successful failover updates the binding for `ttlMs`. Provider identity includes both endpoint and credential, so backup credentials on one URL are not mistaken for the primary credential. Provider recovery affects new sessions and does not switch an active long conversation back mid-session. No session, timestamp, or random field is injected into the model request.
+- `healthCheck` sends protocol-correct probes in parallel every `intervalMs` (Responses/Chat/Messages use their own path, request body, and authentication headers); failed providers move to the end of the candidate order for new sessions (`provider_health` events). Different credentials on one URL are probed independently.
+- `circuitBreaker` is disabled by default (`enabled: false`); turn it on when needed. It is driven by real request outcomes and tracked per model plus an endpoint/credential HMAC identity, without exposing API keys in status or logs. A provider is tripped after `failureThreshold` consecutive failures, or once at least `minRequests` requests have an error rate above `errorRateThreshold`; after `timeoutMs` one half-open probe is allowed, and `successThreshold` consecutive probe successes close the breaker. State changes emit `provider_circuit` log events.
 
 ### Request log and usage stats
 
@@ -196,7 +196,7 @@ The router ships a zero-dependency light-themed admin page under `admin/`; open 
 
 - **Overview**: service status, PID/uptime, provider health (active probes), circuit breaker state (real-request driven);
 - **Usage**: requests/success rate/tokens/cache hit+miss/cost coverage/checkpoint reuse/avg latency, a per-day bar chart, and per-model/provider breakdowns;
-- **Config**: edit `config.json` directly, with "save and hot-reload" (validate, write file, restart the HTTP server in-process — Codex keeps working) and "restart service".
+- **Config**: edit `config.json` directly, with "save and hot-reload" and "restart service". Hot reload parses config, environment references, and the catalog without side effects, then serializes listener replacement. Existing requests (including SSE generations) drain on the retiring Router while the replacement accepts new work. `config.json` and `catalog.json` are atomically published only after the replacement binds; bind or persistence failure restores the previous listener and files.
 
 Admin APIs: `GET /api/status`, `GET /api/config`, `POST /api/reload` (raw config as body), `POST /api/restart`.
 
@@ -336,7 +336,7 @@ requires_openai_auth = true
 experimental_bearer_token = "PROXY_MANAGED"
 ```
 
-The adapter generates `catalog.json` at startup. DeepSeek advertises both `text` and `image`; images are routed to Luna only when an image is present in the latest user message.
+The adapter generates `catalog.json` at startup and publishes only models that currently resolve to a configured Provider, preventing clients from selecting default models that would always return 503. DeepSeek advertises both `text` and `image`; images are routed to Luna only when an image is present in the latest user message.
 
 ## Structured logs
 

@@ -131,7 +131,11 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
       continue;
     }
 
-    const breakerKey = options.breaker?.keyOf(displayModel, provider.endpoint) ?? null;
+    const breakerKey = options.breaker?.keyOf(
+      displayModel,
+      provider.endpoint,
+      provider.apiKey
+    ) ?? null;
     const permit = options.breaker
       ? options.breaker.allow(breakerKey, { forceProbe: last })
       : { allowed: true, usedHalfOpenPermit: false };
@@ -236,7 +240,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
         if (clientDisconnected(options)) {
           recordClientDisconnect(options, provider.endpoint, usage);
         } else if (relayOk) {
-          recordSuccess(options, breakerKey, permit, provider.endpoint, upstream.status, usage);
+          recordSuccess(options, breakerKey, permit, provider, upstream.status, usage);
         } else {
           recordFailure(options, breakerKey, permit, provider.endpoint, 200, 'stream_interrupted', usage);
         }
@@ -297,7 +301,11 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
     const provider = providers[index];
     const nextProvider = providers[index + 1];
     const last = !nextProvider;
-    const breakerKey = options.breaker?.keyOf(displayModel, provider.endpoint) ?? null;
+    const breakerKey = options.breaker?.keyOf(
+      displayModel,
+      provider.endpoint,
+      provider.apiKey
+    ) ?? null;
     const permit = options.breaker
       ? options.breaker.allow(breakerKey, { forceProbe: last })
       : { allowed: true, usedHalfOpenPermit: false };
@@ -415,7 +423,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
           try { res.end(); } catch { /* noop */ }
           return;
         }
-        recordSuccess(options, breakerKey, permit, provider.endpoint, upstream.status, usage);
+        recordSuccess(options, breakerKey, permit, provider, upstream.status, usage);
         return;
       }
 
@@ -582,7 +590,8 @@ function recordClientDisconnect(options, endpoint, usage) {
   });
 }
 
-function recordSuccess(options, breakerKey, permit, endpoint, status, usage) {
+function recordSuccess(options, breakerKey, permit, provider, status, usage) {
+  const endpoint = provider.endpoint;
   options.breaker?.recordSuccess(breakerKey, permit.usedHalfOpenPermit);
   options.tracker?.record({
     endpoint,
@@ -592,7 +601,7 @@ function recordSuccess(options, breakerKey, permit, endpoint, status, usage) {
     usage
   });
   try {
-    options.onProviderSuccess?.(endpoint);
+    options.onProviderSuccess?.(provider);
   } catch {
     // Affinity/observability hooks must never fail an otherwise successful request.
   }

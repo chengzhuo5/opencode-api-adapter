@@ -16,6 +16,10 @@ _Avoid_: mapping, endpoint config
 One concrete upstream endpoint and credential pair eligible to serve a Route.
 _Avoid_: backend, base URL
 
+**Provider Identity**:
+A local HMAC identity for the exact endpoint/credential pair. Affinity, health, and circuit state use this identity so backup credentials on one URL do not poison or displace each other; raw credentials never enter status or logs.
+_Avoid_: endpoint-only identity, API-key logging
+
 **Provider Execution**:
 The complete attempt lifecycle for a Route: Provider ordering, breaker checks, timeout, failover, response relay, and usage outcome.
 _Avoid_: forwarding helper, fallback loop
@@ -63,3 +67,7 @@ _Avoid_: CORS-only protection, inline secrets
 **Request Lifecycle**:
 The client-bound abort scope propagated through Provider Execution, per-attempt deadlines, streaming readers, and non-streaming retries. Client cancellation releases upstream work without counting as Provider failure.
 _Avoid_: orphan upstream streams, breaker pollution
+
+**Hot Reload Transaction**:
+The serialized prepare, listener replacement, atomic config/catalog publication, and rollback sequence. Candidate preparation is side-effect free; existing generations drain on the retiring Router while a replacement accepts new work.
+_Avoid_: validate-and-write, force-closing active generations

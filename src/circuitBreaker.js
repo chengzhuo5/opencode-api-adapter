@@ -1,3 +1,5 @@
+import { createHash, createHmac, randomBytes } from 'node:crypto';
+
 /**
  * 被动熔断器（passive circuit breaker）。
  *
@@ -21,6 +23,12 @@ const DEFAULT_CONFIG = {
 
 export function createCircuitBreaker(config = {}, { onStateChange = () => {} } = {}) {
   const cfg = { ...DEFAULT_CONFIG, ...(config?.circuitBreaker || {}) };
+  const identitySecret = config?.apiKey
+    ? createHash('sha256')
+        .update('opencode-api-adapter/circuit-breaker/v1\0')
+        .update(String(config.apiKey))
+        .digest()
+    : randomBytes(32);
   /** @type {Map<string, object>} */
   const breakers = new Map();
 
@@ -41,7 +49,17 @@ export function createCircuitBreaker(config = {}, { onStateChange = () => {} } =
     return s;
   };
 
-  const keyOf = (model, endpoint) => `${model}::${endpoint}`;
+  const keyOf = (model, endpoint, apiKey) => {
+    const base = `${model}::${endpoint}`;
+    if (apiKey === undefined || apiKey === null) return base;
+    const credential = createHmac('sha256', identitySecret)
+      .update(String(endpoint))
+      .update('\0')
+      .update(String(apiKey))
+      .digest('hex')
+      .slice(0, 16);
+    return `${base}::credential:${credential}`;
+  };
 
   /**
    * 请求前调用。返回 { allowed, usedHalfOpenPermit }。

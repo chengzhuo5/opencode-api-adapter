@@ -1,3 +1,4 @@
+import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { logEvent } from './logger.js';
 import { resolveRoute } from './routes.js';
 
@@ -13,8 +14,22 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
   const hc = config?.healthCheck || {};
   const intervalMs = hc.intervalMs || 300000;
   const timeoutMs = hc.timeoutMs || 20000;
+  const identitySecret = config?.apiKey
+    ? createHash('sha256')
+        .update('opencode-api-adapter/health/v1\0')
+        .update(String(config.apiKey))
+        .digest()
+    : randomBytes(32);
 
-  const keyOf = (model, endpoint) => `${model}::${endpoint}`;
+  const keyOf = (model, endpoint, apiKey) => {
+    const credential = createHmac('sha256', identitySecret)
+      .update(String(endpoint))
+      .update('\0')
+      .update(String(apiKey ?? ''))
+      .digest('hex')
+      .slice(0, 16);
+    return `${model}::${endpoint}::credential:${credential}`;
+  };
 
   // 收集探测目标：显式列表优先，否则扫描 models 中 endpoint 为数组的模型，
   // 探测其所有 provider（当前场景即 opencode 优先、官方兜底的数组配置）。
@@ -45,7 +60,7 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
 
   const refreshWatched = () => {
     watched.clear();
-    for (const t of collect()) watched.set(keyOf(t.model, t.endpoint), t);
+    for (const t of collect()) watched.set(keyOf(t.model, t.endpoint, t.apiKey), t);
   };
 
   async function probe(key) {
@@ -113,7 +128,7 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
   }
 
   return {
-    isUnhealthy: (model, endpoint) => unhealthy.has(keyOf(model, endpoint)),
+    isUnhealthy: (model, endpoint, apiKey) => unhealthy.has(keyOf(model, endpoint, apiKey)),
     probe,
     probeAll,
     status: () => [...watched.entries()].map(([key, target]) => ({

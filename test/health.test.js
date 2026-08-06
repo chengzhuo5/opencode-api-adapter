@@ -28,17 +28,29 @@ test('health monitor marks provider down on failure and recovered on success', a
     },
     onStatusChange: (key, healthy) => statuses.push({ key, healthy })
   });
-  const key = 'deepseek-v4-flash::https://opencode.test/v1/responses';
-  assert.equal(monitor.isUnhealthy('deepseek-v4-flash', 'https://opencode.test/v1/responses'), false);
+  await monitor.probeAll();
+  const key = monitor.status().find((entry) => entry.endpoint.includes('opencode.test')).key;
+  assert.equal(
+    monitor.isUnhealthy('deepseek-v4-flash', 'https://opencode.test/v1/responses', 'opencode-key'),
+    false
+  );
 
   ok = false;
   await monitor.probe(key);
-  assert.equal(monitor.isUnhealthy('deepseek-v4-flash', 'https://opencode.test/v1/responses'), true, 'should be marked down after failed probe');
+  assert.equal(
+    monitor.isUnhealthy('deepseek-v4-flash', 'https://opencode.test/v1/responses', 'opencode-key'),
+    true,
+    'should be marked down after failed probe'
+  );
   assert.equal(statuses[0].healthy, false);
 
   ok = true;
   await monitor.probe(key);
-  assert.equal(monitor.isUnhealthy('deepseek-v4-flash', 'https://opencode.test/v1/responses'), false, 'should recover after successful probe');
+  assert.equal(
+    monitor.isUnhealthy('deepseek-v4-flash', 'https://opencode.test/v1/responses', 'opencode-key'),
+    false,
+    'should recover after successful probe'
+  );
   assert.equal(statuses[1].healthy, true);
 });
 
@@ -146,9 +158,52 @@ test('health monitor accepts response.incomplete as a healthy Responses terminal
     }
   });
   const result = await monitor.probeAll();
-  assert.deepEqual(result, [{
-    key: 'deepseek-v4-flash::https://deepseek.test/v1/responses',
-    healthy: true
-  }]);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].healthy, true);
+  assert.match(result[0].key, /^deepseek-v4-flash::https:\/\/deepseek\.test\/v1\/responses::credential:/);
   assert.equal(bodies[0].max_output_tokens, undefined, 'health probes must not force an incomplete response');
+});
+
+test('health monitor keeps separate state for credentials sharing one endpoint', async () => {
+  const seenKeys = [];
+  const monitor = createHealthMonitor({
+    config: {
+      apiKey: 'global-key',
+      apiBaseUrl: null,
+      healthCheck: {
+        enabled: true,
+        models: ['gpt-5.6-luna'],
+        intervalMs: 60_000,
+        timeoutMs: 5_000
+      },
+      models: {
+        'gpt-5.6-luna': {
+          upstream: 'responses',
+          endpoint: [
+            { url: 'https://same.test/v1', apiKey: 'primary-key' },
+            { url: 'https://same.test/v1', apiKey: 'backup-key' }
+          ]
+        }
+      }
+    },
+    fetchImpl: async (_url, init) => {
+      const key = init.headers.authorization.replace(/^Bearer\s+/i, '');
+      seenKeys.push(key);
+      if (key === 'primary-key') {
+        return new Response(JSON.stringify({ error: { message: 'down' } }), {
+          status: 503,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ id: 'r1', model: 'gpt-5.6-luna' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  });
+  const result = await monitor.probeAll();
+  assert.equal(monitor.watchedCount(), 2);
+  assert.deepEqual(seenKeys.sort(), ['backup-key', 'primary-key']);
+  assert.equal(result.filter((entry) => entry.healthy).length, 1);
+  assert.equal(monitor.status().filter((entry) => entry.unhealthy).length, 1);
 });

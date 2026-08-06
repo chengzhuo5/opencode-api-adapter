@@ -544,6 +544,76 @@ test('client disconnect aborts and cancels an in-flight upstream stream', async 
   });
 });
 
+test('client disconnect also aborts an in-flight Messages provider stream', async () => {
+  let attemptSignal = null;
+  let cancelled = 0;
+  const fetchImpl = async (_url, init) => {
+    attemptSignal = init.signal;
+    return new Response(new ReadableStream({
+      cancel() {
+        cancelled += 1;
+      }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' }
+    });
+  };
+
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    timeouts: { requestMs: 60_000, streamIdleMs: 1_000 }
+  }, fetchImpl, async (base) => {
+    const url = new URL('/v1/responses', base);
+    const payload = JSON.stringify({
+      model: 'minimax-m3',
+      stream: true,
+      input: [{ type: 'message', role: 'user', content: 'disconnect test' }]
+    });
+    await new Promise((resolve, reject) => {
+      let received = '';
+      const guard = setTimeout(() => {
+        socket.destroy();
+        reject(new Error('timed out waiting for the translated first SSE event'));
+      }, 1_000);
+      guard.unref?.();
+      const socket = net.createConnection({
+        host: url.hostname,
+        port: Number(url.port)
+      });
+      socket.once('connect', () => {
+        socket.write(
+          `POST ${url.pathname} HTTP/1.1\r\n`
+          + `Host: ${url.host}\r\n`
+          + 'Content-Type: application/json\r\n'
+          + `Content-Length: ${Buffer.byteLength(payload)}\r\n`
+          + '\r\n'
+          + payload
+        );
+      });
+      socket.on('data', (chunk) => {
+        received += chunk.toString('utf8');
+        if (!received.includes('event: response.created')) return;
+        clearTimeout(guard);
+        socket.destroy();
+        resolve();
+      });
+      socket.on('error', (error) => {
+        clearTimeout(guard);
+        reject(error);
+      });
+    });
+
+    const deadline = Date.now() + 1_000;
+    while (!attemptSignal?.aborted && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(attemptSignal?.aborted, true);
+    assert.equal(cancelled, 1);
+  });
+});
+
 test('configured model without providers returns 503', async () => {
   await withServer({ apiKey: 'k', apiBaseUrl: null, models: {} }, async () => {}, async (base) => {
     const res = await fetch(`${base}/v1/responses`, {
@@ -746,6 +816,62 @@ test('messages route skips a provider opened by the shared circuit breaker', asy
   ]);
 });
 
+test('circuit breaker isolates backup credentials on the same endpoint', async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    const key = init.headers.authorization?.replace(/^Bearer\s+/i, '');
+    calls.push(key);
+    if (key === 'primary-key') {
+      return new Response(JSON.stringify({ error: { message: 'bad credential' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'resp_1',
+      object: 'response',
+      model: 'gpt-5.6-luna',
+      output: [],
+      usage: { input_tokens: 1, output_tokens: 1 }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    providerStickiness: { enabled: false },
+    circuitBreaker: {
+      enabled: true,
+      failureThreshold: 1,
+      successThreshold: 2,
+      timeoutMs: 60_000,
+      errorRateThreshold: 1,
+      minRequests: 100
+    },
+    models: {
+      'gpt-5.6-luna': {
+        upstream: 'responses',
+        endpoint: [
+          { url: 'https://same-provider/v1', apiKey: 'primary-key' },
+          { url: 'https://same-provider/v1', apiKey: 'backup-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(`${base}/v1/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] })
+      });
+      assert.equal(res.status, 200);
+    }
+  });
+  assert.deepEqual(calls, ['primary-key', 'backup-key', 'backup-key']);
+});
+
 test('chat route fails over across configured providers', async () => {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -895,6 +1021,66 @@ test('provider failover updates bounded session affinity', async () => {
     'https://responses-a/v1/responses',
     'https://responses-b/v1/responses'
   ]);
+});
+
+test('session affinity sticks to backup credentials on the same endpoint', async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    const key = init.headers.authorization.replace(/^Bearer\s+/i, '');
+    calls.push(key);
+    if (key === 'primary-key') {
+      return new Response(JSON.stringify({ error: { message: 'temporary failure' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'resp_1',
+      object: 'response',
+      model: 'deepseek-v4-flash',
+      output: [],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 1,
+        prompt_cache_hit_tokens: 8,
+        prompt_cache_miss_tokens: 2
+      }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    providerStickiness: { enabled: true, ttlMs: 60_000, maxEntries: 100 },
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'responses',
+        endpoint: [
+          { url: 'https://same-provider/v1', apiKey: 'primary-key' },
+          { url: 'https://same-provider/v1', apiKey: 'backup-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(`${base}/v1/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'deepseek-v4-flash',
+          stream: false,
+          metadata: { session_id: 'same-credential-session' },
+          input: [{ type: 'message', role: 'user', content: 'hello' }]
+        })
+      });
+      assert.equal(res.status, 200);
+    }
+  });
+
+  assert.deepEqual(calls, ['primary-key', 'backup-key', 'backup-key']);
 });
 
 test('chat route skips a provider opened by the shared circuit breaker', async () => {

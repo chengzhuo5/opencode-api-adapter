@@ -159,9 +159,9 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 三层机制互补：
 
-- `providerStickiness`：默认开启。同一 session/model 使用本地 HMAC 亲和键持续命中同一 Provider；明确 failover 成功后更新绑定并保留 `ttlMs`。健康恢复只影响新会话，不会把进行中的长会话自动切回。路由不会向模型请求体注入 session、时间或随机字段。
-- `healthCheck`：每 `intervalMs` 并行发送与上游协议匹配的探针（Responses/Chat/Messages 使用各自路径、请求体和鉴权头）；探测失败的 provider 被排到新会话候选末尾（日志事件 `provider_health`）。
-- `circuitBreaker`：默认关闭（`enabled: false`），需要时开启。由真实请求成败驱动，按 `model::endpoint` 独立统计。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
+- `providerStickiness`：默认开启。同一 session/model 使用本地 HMAC 亲和键持续命中同一 Provider；明确 failover 成功后更新绑定并保留 `ttlMs`。Provider 身份包含端点与凭据，因此同一 URL 的备用凭据不会被误认为主凭据。健康恢复只影响新会话，不会把进行中的长会话自动切回。路由不会向模型请求体注入 session、时间或随机字段。
+- `healthCheck`：每 `intervalMs` 并行发送与上游协议匹配的探针（Responses/Chat/Messages 使用各自路径、请求体和鉴权头）；探测失败的 provider 被排到新会话候选末尾（日志事件 `provider_health`）。同一 URL 的不同凭据独立探测。
+- `circuitBreaker`：默认关闭（`enabled: false`），需要时开启。由真实请求成败驱动，按模型与端点/凭据 HMAC 身份独立统计，状态和日志不会暴露 API key。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
 
 ### 请求日志与用量统计
 
@@ -197,7 +197,7 @@ GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
 
 - **总览**：服务状态、PID/运行时长、Provider 健康（主动探测）、熔断器状态（真实请求驱动）；
 - **用量**：请求数/成功率/Token/cache hit+miss/费用覆盖/checkpoint 复用/平均延迟，按天柱状图与按模型/Provider 明细；
-- **配置**：直接编辑 `config.json`，支持「保存并热加载」（校验后写文件，进程内重启 HTTP 服务，Codex 无需重连）与「重启服务」。
+- **配置**：直接编辑 `config.json`，支持「保存并热加载」与「重启服务」。热加载先无副作用地解析配置、环境变量和 catalog，再串行替换监听器；旧请求（含 SSE 生成）继续排空，新监听器接管新请求。只有替换成功后才原子发布 `config.json`/`catalog.json`，绑定或写盘失败会自动恢复旧监听器和文件。
 
 管理 API：`GET /api/status`、`GET /api/config`、`POST /api/reload`（body 为配置原文）、`POST /api/restart`。
 
@@ -342,7 +342,7 @@ requires_openai_auth = true
 experimental_bearer_token = "PROXY_MANAGED"
 ```
 
-启动时会生成 `catalog.json`。DeepSeek 的 catalog 能力声明包含 `text` 和 `image`；只有最新用户消息中真的出现图片时，路由器才会把请求交给 Luna。
+启动时会生成 `catalog.json`，且只发布当前配置确实存在可用 Provider 的模型，避免客户端选择到必然 503 的默认模型。DeepSeek 的 catalog 能力声明包含 `text` 和 `image`；只有最新用户消息中真的出现图片时，路由器才会把请求交给 Luna。
 
 ## 结构化日志
 

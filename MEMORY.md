@@ -316,6 +316,46 @@ DeepSeek 前缀、tools 顺序、cache usage 与 Provider Affinity。
 2,010 bytes 后主动断开，usage 最终为 `status=499 / ok=false /
 error=client_disconnected`；随后完整 DeepSeek 非流请求 200 completed，PID 保持不变。
 
+## 2026-08-06：路由热加载事务与 Provider 身份修复
+
+**真实回归**：
+
+1. `/api/reload` 的候选校验会在确认端口等运行时约束前直接覆盖 `catalog.json`；候选
+   最终 400 或新端口 bind 失败时，配置仍是旧版但 catalog 已变成候选版。
+2. 热重启过去 `closeAllConnections()`，会直接切断正在生成的 SSE；初版 drain 修复又
+   没有持续回收生成完成后的 keep-alive socket，单次替换会额外拖约 5 秒。
+3. Request Lifecycle 在 Responses/Chat 已传播，但 `route.upstream === messages` 分支
+   漏传父 signal，客户端关闭后 Anthropic reader 仍占用上游连接。
+4. Route 明确保留“同 URL、不同 key”的备用凭据，但 Provider Affinity、Health 与
+   Circuit Breaker 过去只按 endpoint 建状态：备用凭据成功后下一轮仍回主 key，一个
+   key 的失败也会污染另一个 key。
+5. `catalog.json` 过去列出全部内置模型，即使 `apiBaseUrl:null` 且模型没有自定义
+   Provider；客户端可选择这些必然返回 503 的幽灵模型。
+
+**修复**：
+
+1. `resolveConfig()` 从文件读取解耦；热加载 `prepareConfig()` 只解析/校验/构建内存
+   catalog，不写文件。替换操作串行执行：旧 listener 停止接新请求但保留活动连接，
+   新 listener bind 成功后才用同目录临时文件原子发布 config/catalog；写盘失败恢复
+   原文件，bind 失败恢复旧 listener。
+2. retiring Router 持续关闭已转 idle 的 keep-alive 连接；`stop()` 同时等待当前与所有
+   retiring Router，并在 15 秒后才强制断开，正常 SSE 不再被热加载取消。
+3. Messages Provider Execution 补传 Request Lifecycle signal；客户端断开会 abort
+   attempt、cancel reader，行为与 Responses/Chat 一致。
+4. Provider Affinity 绑定完整 endpoint/credential HMAC；Health 与 Circuit Breaker
+   同样按凭据隔离状态，status/log 只暴露不可逆短指纹，不落 API key。成功 hook 传递
+   immutable Provider 描述，不修改 Router Request。
+5. `listRoutedModels()` 现在实际调用 Route 解析，只把当前存在 Provider 的模型写进
+   catalog。本机配置的有效目录收敛为 6 个 GPT 模型和 `deepseek-v4-flash`。
+
+**缓存安全验收**：本轮没有改变 Request Preparation、Protocol Adapter 请求结构、
+tools 顺序、usage 提取或压缩 checkpoint。DeepSeek hit/miss、确定性前缀、真实费用评估
+相关回归继续通过；同 URL 备用凭据现在也能保持同会话 Provider/账号粘性。
+
+**验证**：热加载无副作用、端口冲突自动回滚、活动 SSE drain、Messages 客户端取消、
+同端点多凭据 affinity/health/breaker、catalog 可路由性均有回归；全套 241/241，
+smoke 200/200，双向四跳 mock、pack dry-run、语法检查与 `git diff --check` 均通过。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

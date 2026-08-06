@@ -228,3 +228,20 @@ test('lists routed models', () => {
   assert.ok(listRoutedModels(config).includes('gpt-5.6-luna'));
   assert.ok(listRoutedModels(config).includes('qwen3.6-plus'));
 });
+
+test('catalog routing list excludes default models without a configured provider', () => {
+  const routed = listRoutedModels({
+    apiBaseUrl: null,
+    apiKey: 'k',
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'responses',
+        endpoint: 'https://deepseek.example/v1',
+        apiKey: 'k'
+      }
+    }
+  });
+  assert.equal(routed.includes('deepseek-v4-flash'), true);
+  assert.equal(routed.includes('minimax-m3'), false);
+  assert.equal(routed.includes('qwen3.6-plus'), false);
+});
