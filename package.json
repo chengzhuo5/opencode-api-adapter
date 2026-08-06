@@ -12,6 +12,7 @@
     "opencode-api-adapter": "bin/opencode-api-adapter.mjs"
   },
   "files": [
+    "admin",
     "bin",
     "src",
     "catalog-template.json",

@@ -13,6 +13,7 @@ import { createUsageLogger, createRequestTracker } from './usageLog.js';
 import { createCodexManager } from './codexConfig.js';
 import { createProviderAffinity } from './providerAffinity.js';
 import { createCacheDiagnostics } from './cacheDiagnostics.js';
+import { createManagementAccess } from './managementAccess.js';
 
 const ADMIN_MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -52,9 +53,21 @@ export function createRouter(config, {
   const providerAffinity = createProviderAffinity(config);
   const cacheDiagnostics = createCacheDiagnostics(config);
   const codex = config?.codex?.enabled ? createCodexManager(config) : null;
+  const managementAccess = createManagementAccess(config);
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+      const managementDenial = managementAccess.inspect(req, url.pathname);
+      if (managementDenial) {
+        for (const [name, value] of Object.entries(managementDenial.headers)) {
+          res.setHeader(name, value);
+        }
+        res.setHeader('cache-control', 'no-store');
+        sendJson(res, managementDenial.statusCode, {
+          error: { message: managementDenial.message }
+        });
+        return;
+      }
       if (req.method === 'GET' && url.pathname === '/healthz') {
         sendJson(res, 200, { ok: true });
         return;
@@ -96,6 +109,7 @@ export function createRouter(config, {
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/status') {
+        res.setHeader('cache-control', 'no-store');
         sendJson(res, 200, {
           ok: true,
           pid: process.pid,
@@ -110,6 +124,7 @@ export function createRouter(config, {
             circuitBreaker: config.circuitBreaker,
             usageLog: config.usageLog,
             providerStickiness: config.providerStickiness,
+            management: managementAccess.summary(),
             compress: config.compress ? { enabled: config.compress.enabled, backend: config.compress.backend } : null,
             nonStreamingUpstream: Boolean(config.nonStreamingUpstream)
           },
@@ -122,6 +137,7 @@ export function createRouter(config, {
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/config') {
+        res.setHeader('cache-control', 'no-store');
         sendJson(res, 200, { ok: true, config: getConfigText ? getConfigText() : '' });
         return;
       }
@@ -264,7 +280,14 @@ function serveAdmin(res, urlPath, adminDir) {
     return;
   }
   const ext = path.extname(file).toLowerCase();
-  res.writeHead(200, { 'content-type': ADMIN_MIME[ext] || 'application/octet-stream' });
+  res.writeHead(200, {
+    'content-type': ADMIN_MIME[ext] || 'application/octet-stream',
+    'cache-control': 'no-store',
+    'content-security-policy': "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'",
+    'referrer-policy': 'no-referrer',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY'
+  });
   res.end(readFileSync(file));
 }
 

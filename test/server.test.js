@@ -123,6 +123,9 @@ test('admin page is served from adminDir', async () => {
     const res = await fetch(base + '/admin');
     assert.equal(res.status, 200);
     assert.match(res.headers.get('content-type'), /text\/html/);
+    assert.match(res.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
+    assert.equal(res.headers.get('x-frame-options'), 'DENY');
+    assert.equal(res.headers.get('cache-control'), 'no-store');
     assert.match(await res.text(), /<h1>admin<\/h1>/);
   }, { adminDir: dir });
   rmSync(dir, { recursive: true, force: true });
@@ -139,6 +142,105 @@ test('admin path traversal is blocked', async () => {
     assert.equal(res.status, 404, 'traversal must not escape adminDir');
   }, { adminDir: dir });
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('management plane is denied when a non-loopback listener has not opted into remote access', async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'admin-remote-denied-'));
+  writeFileSync(path.join(dir, 'index.html'), '<h1>admin</h1>');
+  await withServer({
+    host: '0.0.0.0',
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    management: { allowRemote: false, token: '', trustedOrigins: [] }
+  }, async () => {}, async (base) => {
+    const page = await fetch(base + '/admin');
+    assert.equal(page.status, 403);
+    const status = await fetch(base + '/api/status');
+    assert.equal(status.status, 403);
+    const usage = await fetch(base + '/v1/usage');
+    assert.equal(usage.status, 403);
+    const ctx = await fetch(base + `/v1/ctx/${'a'.repeat(64)}`);
+    assert.equal(ctx.status, 403);
+  }, { adminDir: dir });
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test('remote management APIs require a bearer token without exposing it', async () => {
+  const secret = 'remote-admin-secret';
+  await withServer({
+    host: '0.0.0.0',
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    management: {
+      allowRemote: true,
+      token: secret,
+      trustedOrigins: ['https://router.example']
+    }
+  }, async () => {}, async (base) => {
+    const missing = await fetch(base + '/api/status');
+    assert.equal(missing.status, 401);
+    assert.match(missing.headers.get('www-authenticate') || '', /^Bearer /);
+
+    const wrong = await fetch(base + '/api/status', {
+      headers: { authorization: 'Bearer wrong-secret' }
+    });
+    assert.equal(wrong.status, 401);
+
+    const ok = await fetch(base + '/api/status', {
+      headers: { authorization: `Bearer ${secret}` }
+    });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.text()).includes(secret), false);
+
+    const usage = await fetch(base + '/v1/usage', {
+      headers: { authorization: `Bearer ${secret}` }
+    });
+    assert.equal(usage.status, 200);
+  });
+});
+
+test('state-changing management APIs reject untrusted browser origins before committing', async () => {
+  let committed = false;
+  await withServer({
+    host: '127.0.0.1',
+    port: 15721,
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    management: {
+      allowRemote: false,
+      token: '',
+      trustedOrigins: ['https://trusted-admin.example']
+    }
+  }, async () => {}, async (base) => {
+    const rejected = await fetch(base + '/api/restart', {
+      method: 'POST',
+      headers: { origin: 'https://evil.example' }
+    });
+    assert.equal(rejected.status, 403);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(committed, false);
+
+    const fetchMetadataRejected = await fetch(base + '/api/restart', {
+      method: 'POST',
+      headers: { 'sec-fetch-site': 'cross-site' }
+    });
+    assert.equal(fetchMetadataRejected.status, 403);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(committed, false);
+
+    const accepted = await fetch(base + '/api/restart', {
+      method: 'POST',
+      headers: { origin: 'https://trusted-admin.example' }
+    });
+    assert.equal(accepted.status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(committed, true);
+  }, {
+    onRestartCommit: async () => { committed = true; }
+  });
 });
 
 test('api/status exposes health and circuit state', async () => {

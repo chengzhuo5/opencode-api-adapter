@@ -55,3 +55,7 @@ _Avoid_: per-poll file scan, synchronous request logging
 **Request Ingress**:
 The bounded HTTP body reader that enforces declared and streamed byte limits plus per-chunk idle deadlines before Request Preparation.
 _Avoid_: unbounded buffering, socket-global timeout
+
+**Management Access**:
+The pre-routing policy that keeps the admin UI and management APIs local by default, requires a constant-time Bearer token on non-loopback listeners, and rejects untrusted browser origins before state changes.
+_Avoid_: CORS-only protection, inline secrets

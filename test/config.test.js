@@ -19,7 +19,45 @@ test('loads config and api key from env', () => {
   assert.equal(cfg.apiKey, 'k');
   assert.equal(cfg.limits.maxRequestBodyBytes, 67108864);
   assert.equal(cfg.limits.requestBodyIdleMs, 120000);
+  assert.equal(cfg.management.allowRemote, false);
+  assert.equal(cfg.management.tokenEnv, 'CODEX_ROUTER_ADMIN_TOKEN');
+  assert.equal(cfg.management.token, '');
   rmSync(dir, { recursive: true, force: true });
+});
+
+test('non-loopback remote management requires its token environment variable', () => {
+  const missing = makeConfig({
+    host: '0.0.0.0',
+    management: {
+      allowRemote: true,
+      tokenEnv: 'TEST_ROUTER_ADMIN_TOKEN',
+      trustedOrigins: ['https://router.example']
+    }
+  });
+  assert.throws(() => loadConfig({
+    configPath: missing.file,
+    env: { OPENCODE_GO_API_KEY: 'k' }
+  }), /missing TEST_ROUTER_ADMIN_TOKEN.*remote management/i);
+  rmSync(missing.dir, { recursive: true, force: true });
+
+  const configured = makeConfig({
+    host: '0.0.0.0',
+    management: {
+      allowRemote: true,
+      tokenEnv: 'TEST_ROUTER_ADMIN_TOKEN',
+      trustedOrigins: ['https://router.example']
+    }
+  });
+  const cfg = loadConfig({
+    configPath: configured.file,
+    env: {
+      OPENCODE_GO_API_KEY: 'k',
+      TEST_ROUTER_ADMIN_TOKEN: 'remote-admin-secret'
+    }
+  });
+  assert.equal(cfg.management.token, 'remote-admin-secret');
+  assert.deepEqual(cfg.management.trustedOrigins, ['https://router.example']);
+  rmSync(configured.dir, { recursive: true, force: true });
 });
 
 test('throws when api key env is missing', () => {

@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { isLoopbackHost } from './managementAccess.js';
 
 export const DEFAULT_CONFIG = {
   host: '127.0.0.1',
@@ -12,6 +13,11 @@ export const DEFAULT_CONFIG = {
   limits: {
     maxRequestBodyBytes: 67108864,
     requestBodyIdleMs: 120000
+  },
+  management: {
+    allowRemote: false,
+    tokenEnv: 'CODEX_ROUTER_ADMIN_TOKEN',
+    trustedOrigins: []
   },
   models: {},
   nonStreamingUpstream: false,
@@ -65,11 +71,17 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
   const abs = path.resolve(cwd, configPath);
   if (!existsSync(abs)) throw new Error(`config file not found: ${abs}`);
   const raw = JSON.parse(readFileSync(abs, 'utf8'));
+  const management = {
+    ...DEFAULT_CONFIG.management,
+    ...(raw.management || {}),
+    token: ''
+  };
   const config = {
     ...DEFAULT_CONFIG,
     ...raw,
     timeouts: { ...DEFAULT_CONFIG.timeouts, ...(raw.timeouts || {}) },
     limits: { ...DEFAULT_CONFIG.limits, ...(raw.limits || {}) },
+    management,
     models: raw.models || {},
     modelPatterns: raw.modelPatterns || {},
     compress: { ...DEFAULT_CONFIG.compress, ...(raw.compress || {}) },
@@ -82,6 +94,11 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     },
     codex: { ...DEFAULT_CONFIG.codex, ...(raw.codex || {}) }
   };
+  const managementToken = management.tokenEnv ? env[management.tokenEnv] || '' : '';
+  if (!isLoopbackHost(config.host) && management.allowRemote && !managementToken) {
+    throw new Error(`missing ${management.tokenEnv || 'management token'} environment variable for remote management`);
+  }
+  management.token = managementToken;
   const requireEnv = (name, context) => {
     const value = env[name];
     if (!value) throw new Error(`missing ${name} environment variable for ${context}`);

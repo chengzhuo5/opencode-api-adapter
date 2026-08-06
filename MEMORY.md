@@ -244,6 +244,37 @@ conversation/prefix/tool/provider 四类 HMAC 指纹齐全、`ok:true / error:nu
 `Content-Length: 67108865`、不发送 body，8.4 ms 即收到 413 且 `Connection: close`，
 证明默认 64 MiB 快速拒绝路径在线生效。
 
+## 2026-08-06：管理面访问控制与桌面资源迁移
+
+**根因**：
+
+1. `/admin`、`/api/*`、`/v1/usage` 与 `/v1/ctx/*` 过去不检查监听地址、身份或浏览器
+   Origin；把 `host` 改为非 loopback 后会直接暴露配置读取、热加载、重启和原始压缩
+   存档读取能力。
+2. 管理页把 `{ error: { message } }` 的整个 `error` 对象传给 `Error`，最终显示
+   `[object Object]`。
+3. 打包桌面壳只在 admin 目录不存在时复制资源，已安装版本永远收不到新页面文件；桌面
+   初始配置还错误地默认开启 circuit breaker。
+
+**修复**：
+
+1. 新增独立 `Management Access` 策略，在路由分派和读取 body 前统一判定。loopback
+   保持免 token；非 loopback 默认 403，显式 `management.allowRemote=true` 后必须从
+   `management.tokenEnv` 注入 Bearer token，使用 SHA-256 + `timingSafeEqual` 比较。
+2. 所有浏览器状态变更同时校验可信 Origin 与 `Sec-Fetch-Site`；无 Origin 的 CLI/自动化
+   仍兼容。管理响应 `no-store`，静态页增加 CSP、DENY frame、nosniff 与 no-referrer。
+3. 管理页 API client 正确展开嵌套错误；远程 token 只存当前标签页 `sessionStorage`，
+   错误 token 停止重复弹窗，不进入 config、响应或日志。
+4. npm 发布包显式包含 `admin/`。桌面打包生成 SHA-256 asset manifest，启动时升级并校验
+   应用自带 admin 文件、清理陈旧资源，同时保留既有 config/数据；新桌面配置的压缩和
+   circuit breaker 均默认关闭。
+
+**验证**：新增远程拒绝、Bearer、Origin/Fetch Metadata、错误展开、token header、桌面
+资源升级/篡改修复/配置保留回归。全套 229/229、smoke 200/200、pack dry-run 确认
+`admin/apiClient.js` 与 `src/managementAccess.js` 入包；desktop prep manifest schema=1、
+packageVersion=0.2.0、包含 6 个资源且含 API client。此访问层不读取或改写 Router Request，
+不影响 DeepSeek 模型可见前缀、tools 顺序、Provider Affinity 或 cache usage 保真。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

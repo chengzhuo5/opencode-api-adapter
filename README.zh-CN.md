@@ -73,6 +73,11 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
     "maxRequestBodyBytes": 67108864,
     "requestBodyIdleMs": 120000
   },
+  "management": {
+    "allowRemote": false,
+    "tokenEnv": "CODEX_ROUTER_ADMIN_TOKEN",
+    "trustedOrigins": []
+  },
   "models": {}
 }
 ```
@@ -195,6 +200,8 @@ GET /v1/usage?days=7&provider=https://ergouapi.com/v1/responses
 
 管理 API：`GET /api/status`、`GET /api/config`、`POST /api/reload`（body 为配置原文）、`POST /api/restart`。
 
+管理面（`/admin`、`/api/*`、`/v1/usage`、`/v1/ctx/*`）默认只允许 loopback 监听。若把 `host` 改为 `0.0.0.0`、`::` 或其他非 loopback 地址，未显式开启 `management.allowRemote` 时统一返回 403；开启后必须通过 `management.tokenEnv` 指定的环境变量提供 Bearer 令牌，管理页只把令牌保存在当前标签页的 `sessionStorage`。浏览器状态变更请求还必须来自 loopback 默认 Origin 或 `trustedOrigins` 明确列出的 Origin，并校验 `Sec-Fetch-Site`；无 `Origin` 的 CLI/自动化仍可在携带远程 Bearer 令牌后使用。令牌不写入 config、响应或日志。
+
 桌面壳在 `desktop/`（ewvjs = Node + Windows 自带 WebView2）：
 
 ```powershell
@@ -204,7 +211,7 @@ npm start              # 源码模式：直接用仓库 config.json，端口被�
 npm run package        # 打包：dist/CodexRouter.exe + assets/（便携目录）
 ```
 
-打包后的 exe 首次运行会把资源种子到 `%LOCALAPPDATA%\CodexRouter`（config/admin/catalog/usage/logs 都在该目录），路由在 App 进程内运行，关闭窗口即停止；若 15722 已被占用（如 watchdog 在跑）则只打开窗口接管，不重复启动。
+打包后的 exe 首次运行会把资源种子到 `%LOCALAPPDATA%\CodexRouter`（config/admin/catalog/usage/logs 都在该目录）；后续版本按 SHA-256 asset manifest 自动升级应用自带的 admin 资源，但保留已有 `config.json` 与数据。路由在 App 进程内运行，关闭窗口即停止；若 15722 已被占用（如 watchdog 在跑）则只打开窗口接管，不重复启动。桌面初始配置中的压缩与 circuit breaker 均保持关闭。
 
 ### 注册为 Windows 服务（可选）
 

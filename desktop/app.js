@@ -4,12 +4,13 @@
  * 两种运行模式：
  * - 源码模式（npm start）：路由直接用仓库 config.json 在进程内启动；
  *   若 15722 已被 watchdog 占用，则只打开窗口，不重复启动。
- * - 打包模式（CodexRouter.exe + assets/）：首次运行把 assets 里的
- *   admin/ 与模板写入 %LOCALAPPDATA%\CodexRouter，路由数据（config、
- *   catalog、usage、logs、ctx-store）都在该目录，随窗口关闭而停止。
+ * - 打包模式（CodexRouter.exe + assets/）：按资源 manifest 升级 admin，
+ *   首次运行写入模板与 config；路由数据（catalog、usage、logs、ctx-store）
+ *   都在 %LOCALAPPDATA%\CodexRouter，随窗口关闭而停止。
  */
 import { create_window, start } from 'ewvjs';
 import { startRouter } from '../src/main.js';
+import { seedDataDir } from './resourceSeed.js';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,71 +41,13 @@ function isPortOpen(port, timeoutMs = 1200) {
   });
 }
 
-function copyDir(from, to) {
-  fs.mkdirSync(to, { recursive: true });
-  for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
-    const src = path.join(from, entry.name);
-    const dst = path.join(to, entry.name);
-    if (entry.isDirectory()) copyDir(src, dst);
-    else fs.copyFileSync(src, dst);
-  }
-}
-
-function seedDataDir() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  const adminTarget = path.join(DATA_DIR, 'admin');
-  if (!fs.existsSync(adminTarget)) {
-    copyDir(path.join(ASSETS_DIR, 'admin'), adminTarget);
-  }
-  const templateTarget = path.join(DATA_DIR, 'catalog-template.json');
-  if (!fs.existsSync(templateTarget)) {
-    fs.copyFileSync(path.join(ASSETS_DIR, 'catalog-template.json'), templateTarget);
-  }
-  const configTarget = path.join(DATA_DIR, 'config.json');
-  if (!fs.existsSync(configTarget)) {
-    const seed = {
-      host: '127.0.0.1',
-      port: 15722,
-      apiBaseUrl: 'https://opencode.ai/zen/go/v1',
-      apiKeyEnv: 'OPENCODE_GO_API_KEY',
-      catalogFile: path.join(DATA_DIR, 'catalog.json'),
-      timeouts: { requestMs: 600000, streamIdleMs: 180000 },
-      models: {},
-      modelPatterns: {
-        'gpt-*': {
-          upstream: 'responses',
-          endpoint: 'https://ergouapi.com/v1',
-          apiKeyEnv: 'ERGOUAPI_API_KEY',
-          maxHistoryMessages: 10,
-          contextWindow: 353000
-        }
-      },
-      usageLog: { enabled: true, file: path.join(DATA_DIR, 'usage', 'requests.jsonl') },
-      compress: {
-        enabled: false,
-        backend: 'lean-ctx',
-        baseUrl: 'http://127.0.0.1:4444',
-        token: '',
-        storeDir: path.join(DATA_DIR, 'ctx-store'),
-        cacheSize: 1000,
-        timeoutMs: 30000,
-        logLevel: 'verbose'
-      },
-      healthCheck: { enabled: true, intervalMs: 300000, timeoutMs: 20000 },
-      circuitBreaker: { enabled: true, failureThreshold: 3, successThreshold: 2, timeoutMs: 60000, errorRateThreshold: 0.6, minRequests: 5 }
-    };
-    fs.writeFileSync(configTarget, JSON.stringify(seed, null, 2), 'utf8');
-  }
-  return configTarget;
-}
-
 async function main() {
   let router = null;
   let configPath = path.join(SOURCE_DIR, 'config.json');
   let port = 15722;
 
   if (isPackaged) {
-    configPath = seedDataDir();
+    configPath = seedDataDir({ assetsDir: ASSETS_DIR, dataDir: DATA_DIR });
     port = Number(readJson(configPath).port) || 15722;
     if (!(await isPortOpen(port))) {
       router = await startRouter({

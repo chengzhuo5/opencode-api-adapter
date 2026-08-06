@@ -1,8 +1,12 @@
+import { createApiClient } from './apiClient.js';
+
 (function () {
   'use strict';
 
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => [...document.querySelectorAll(sel)];
+  const TOKEN_KEY = 'codexRouterAdminToken';
+  let authPromptSuppressed = false;
 
   const state = {
     status: null,
@@ -17,19 +21,51 @@
 
   /* ---------- helpers ---------- */
 
-  async function api(path, options = {}) {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15000);
-    try {
-      const res = await fetch(path, { ...options, signal: ctrl.signal, headers: { ...(options.headers || {}) } });
-      const text = await res.text();
-      let data = null;
-      try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-      if (!res.ok) throw new Error((data && data.error) || (data && data.message) || `HTTP ${res.status}`);
-      return data;
-    } finally {
-      clearTimeout(timer);
+  const requestApi = createApiClient({
+    getToken: () => {
+      try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch { return ''; }
     }
+  });
+
+  async function api(path, options = {}) {
+    try {
+      return await requestApi(path, options);
+    } catch (error) {
+      if (error?.status !== 401 || authPromptSuppressed) throw error;
+      const token = prompt('远程管理需要 Bearer 令牌。令牌只保存在当前标签页，不会写入配置或日志。', '');
+      if (token === null) {
+        authPromptSuppressed = true;
+        throw error;
+      }
+      if (!token.trim()) {
+        try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* noop */ }
+        throw error;
+      }
+      try { sessionStorage.setItem(TOKEN_KEY, token.trim()); } catch { /* noop */ }
+      authPromptSuppressed = false;
+      try {
+        return await requestApi(path, options);
+      } catch (retryError) {
+        if (retryError?.status === 401) {
+          try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* noop */ }
+          authPromptSuppressed = true;
+          toast('管理令牌无效，请点击“管理令牌”重新输入', 'err');
+        }
+        throw retryError;
+      }
+    }
+  }
+
+  function editAuthToken() {
+    const token = prompt('输入远程管理 Bearer 令牌；留空将清除当前标签页中的令牌。', '');
+    if (token === null) return;
+    try {
+      if (token.trim()) sessionStorage.setItem(TOKEN_KEY, token.trim());
+      else sessionStorage.removeItem(TOKEN_KEY);
+    } catch { /* noop */ }
+    authPromptSuppressed = false;
+    toast(token.trim() ? '管理令牌已保存到当前标签页' : '管理令牌已清除', token.trim() ? 'ok' : 'warn');
+    pollStatus();
   }
 
   function fmtInt(n) {
@@ -427,6 +463,7 @@
   /* ---------- init ---------- */
 
   $$('.nav-item').forEach((a) => a.addEventListener('click', navigate));
+  $('#btnAuth').addEventListener('click', editAuthToken);
   $('#btnRefresh').addEventListener('click', () => {
     if (currentView() === 'config') loadConfig();
     else pollStatus();

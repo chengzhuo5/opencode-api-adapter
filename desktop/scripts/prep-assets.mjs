@@ -6,6 +6,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const DESKTOP_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -27,4 +28,26 @@ fs.mkdirSync(ASSETS_DIR, { recursive: true });
 copyDir(path.join(SOURCE_DIR, 'admin'), path.join(ASSETS_DIR, 'admin'));
 fs.copyFileSync(path.join(SOURCE_DIR, 'catalog-template.json'), path.join(ASSETS_DIR, 'catalog-template.json'));
 fs.copyFileSync(path.join(SOURCE_DIR, 'config.example.json'), path.join(ASSETS_DIR, 'config.example.json'));
+const packageVersion = JSON.parse(fs.readFileSync(path.join(SOURCE_DIR, 'package.json'), 'utf8')).version;
+const files = {};
+for (const file of listFiles(ASSETS_DIR)) {
+  const relative = path.relative(ASSETS_DIR, file).replaceAll(path.sep, '/');
+  if (relative === 'asset-manifest.json') continue;
+  files[relative] = createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+fs.writeFileSync(path.join(ASSETS_DIR, 'asset-manifest.json'), JSON.stringify({
+  schemaVersion: 1,
+  packageVersion,
+  files
+}, null, 2));
 console.log('[prep] assets ready:', ASSETS_DIR);
+
+function listFiles(dir) {
+  const files = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const file = path.join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...listFiles(file));
+    else files.push(file);
+  }
+  return files.sort();
+}

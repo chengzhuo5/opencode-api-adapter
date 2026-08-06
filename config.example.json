@@ -12,6 +12,11 @@
     "maxRequestBodyBytes": 67108864,
     "requestBodyIdleMs": 120000
   },
+  "management": {
+    "allowRemote": false,
+    "tokenEnv": "CODEX_ROUTER_ADMIN_TOKEN",
+    "trustedOrigins": []
+  },
   "models": {
     "deepseek-v4-flash": {
       "upstream": "responses",

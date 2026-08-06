@@ -73,6 +73,11 @@ Minimal configuration:
     "maxRequestBodyBytes": 67108864,
     "requestBodyIdleMs": 120000
   },
+  "management": {
+    "allowRemote": false,
+    "tokenEnv": "CODEX_ROUTER_ADMIN_TOKEN",
+    "trustedOrigins": []
+  },
   "models": {}
 }
 ```
@@ -194,6 +199,8 @@ The router ships a zero-dependency light-themed admin page under `admin/`; open 
 
 Admin APIs: `GET /api/status`, `GET /api/config`, `POST /api/reload` (raw config as body), `POST /api/restart`.
 
+The management surface (`/admin`, `/api/*`, `/v1/usage`, `/v1/ctx/*`) is loopback-only by default. If `host` is changed to `0.0.0.0`, `::`, or another non-loopback address, it returns 403 until `management.allowRemote` is explicitly enabled. Remote management then requires a Bearer token from the environment variable named by `management.tokenEnv`; the admin page stores it only in the current tab's `sessionStorage`. Browser mutations must also come from a default loopback Origin or an Origin listed in `trustedOrigins`, with `Sec-Fetch-Site` validation. CLI and automation requests without an `Origin` remain supported when they carry the remote Bearer token. The token is never written to config, responses, or logs.
+
 The desktop shell lives in `desktop/` (ewvjs = Node + the Windows built-in WebView2):
 
 ```powershell
@@ -203,7 +210,7 @@ npm start              # source mode: uses the repo config.json; only opens a wi
 npm run package        # package: dist/CodexRouter.exe + assets/ (portable folder)
 ```
 
-On first run the packaged exe seeds `%LOCALAPPDATA%\CodexRouter` (config/admin/catalog/usage/logs all live there) and runs the router inside the app process; closing the window stops it. If port 15722 is already in use (e.g. the watchdog is running), it attaches to the running router instead of starting another.
+On first run the packaged exe seeds `%LOCALAPPDATA%\CodexRouter` (config/admin/catalog/usage/logs all live there). Later releases upgrade the bundled admin resources through a SHA-256 asset manifest while preserving the existing `config.json` and data. The router runs inside the app process and closing the window stops it. If port 15722 is already in use (e.g. the watchdog is running), it attaches to the running router instead of starting another. Compression and the circuit breaker remain disabled in the desktop seed config.
 
 ### Register as a Windows service (optional)
 
