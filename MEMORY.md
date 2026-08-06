@@ -658,3 +658,12 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **修复**：Usage Store 新增 `cacheHitCoverageRate`、`cacheRatioHitTokens`、`cacheRatioMissTokens`；完整样本算法保持不变，不把未知 miss 当 0。管理页总览、用量卡片、按模型/Provider 表格同时展示“命中率 / 覆盖”。
 - **验证**：usage 定向测试 **15/15**；现有旧日志经最新聚合可明确区分 total hit/miss 与完整样本覆盖。
 - **浏览器 QA**：本机管理页导航、用量图表、表格语义和资源加载正常，无应用控制台错误；当前服务仍是旧 API，因此新 coverage 字段需重启服务后显示。
+
+## 2026-08-06：请求生命周期最终边界收口（本阶段）
+
+- **入站 body 超时根因**：`readBody()` 在 idle timeout 或超限时直接抛错，未调用请求 `AsyncIterator.return()`；超时竞争中遗留的 `iterator.next()` 可能继续挂在 IncomingMessage 上。
+- **修复**：`readBody()` 统一捕获异常并主动关闭 iterator，正常 EOF 标记已关闭；新增最小 async-iterator 回归，锁定 timeout 后清理语义。
+- **上游错误 body 根因**：最终非 2xx 路径的 `relayError()` 使用 `Response.text()`，没有绑定 attempt/client abort；客户端断开时慢错误流可能继续占住上游 reader。
+- **修复**：新增带 signal 的 reader 读取器，`relayError()`、Responses/Chat/Messages 相关 relay 路径都传播 attempt signal；客户端断开会 cancel reader，不再等待上游错误 body 结束。
+- **验证**：全套测试 **263/263**；`npm run smoke`、`npm pack --dry-run`、60 个 JS/MJS `node --check`、`git diff --check` 均通过。
+- **缓存约束**：仅改变本地请求/响应生命周期；未向 DeepSeek 模型可见前缀注入时间、随机 ID、健康或 session metadata，未改变 hit/miss usage、Provider 粘性、工具顺序、稳定 checkpoint 或实际费用评估；日志仍不含 API key、完整 Prompt、图片或原始工具输出。

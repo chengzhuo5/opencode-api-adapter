@@ -266,7 +266,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
         await discardResponseBody(upstream);
         await forwardChatFallback(res, body, config, fetchImpl, displayModel, options);
       } else {
-        await relayError(res, upstream);
+        await relayError(res, upstream, attempt.signal);
       }
       return;
     } finally {
@@ -374,7 +374,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
           await discardResponseBody(upstream);
           continue;
         }
-        await relayError(res, upstream);
+        await relayError(res, upstream, attempt.signal);
         return;
       }
 

@@ -6,7 +6,7 @@ import net from 'node:net';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createRouter } from '../src/server.js';
+import { createRouter, readBody } from '../src/server.js';
 import { normalizeResponsesRequest } from '../src/translate/responsesContext.js';
 
 async function withServer(config, fetchImpl, fn, options = {}) {
@@ -18,6 +18,14 @@ async function withServer(config, fetchImpl, fn, options = {}) {
   } finally {
     await server.__routerCleanup?.();
     server.close();
+  }
+}
+
+async function waitUntil(predicate, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error('condition timed out');
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
 
@@ -449,6 +457,36 @@ test('stalled request body returns 408 after the configured idle timeout', async
   });
 });
 
+test('request body timeout closes the async iterator before propagating the error', async () => {
+  let returned = false;
+  const iterator = {
+    next() {
+      return new Promise(() => {});
+    },
+    return() {
+      returned = true;
+      return Promise.resolve({ done: true });
+    }
+  };
+  const req = {
+    headers: {},
+    [Symbol.asyncIterator]() {
+      return iterator;
+    }
+  };
+
+  const keepAlive = setTimeout(() => {}, 50);
+  try {
+    await assert.rejects(
+      readBody(req, { limits: { maxRequestBodyBytes: 1024, requestBodyIdleMs: 10 } }),
+      /idle timeout/i
+    );
+  } finally {
+    clearTimeout(keepAlive);
+  }
+  assert.equal(returned, true, 'timed-out request iterators must be closed');
+});
+
 test('client disconnect aborts and cancels an in-flight upstream stream', async () => {
   let attemptSignal = null;
   let upstreamController = null;
@@ -611,6 +649,62 @@ test('client disconnect also aborts an in-flight Messages provider stream', asyn
     }
     assert.equal(attemptSignal?.aborted, true);
     assert.equal(cancelled, 1);
+  });
+});
+
+test('client disconnect aborts a slow upstream error body', async () => {
+  let attemptSignal = null;
+  let upstreamStarted = false;
+  let upstreamCancelled = false;
+  const fetchImpl = async (_url, init) => {
+    attemptSignal = init.signal;
+    return new Response(new ReadableStream({
+      pull(controller) {
+        if (!upstreamStarted) {
+          upstreamStarted = true;
+          controller.enqueue(new TextEncoder().encode('{"error":"partial"'));
+        }
+      },
+      cancel() {
+        upstreamCancelled = true;
+      }
+    }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: null,
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'responses',
+        endpoint: 'https://provider.test/v1',
+        apiKey: 'provider-key'
+      }
+    },
+    timeouts: { requestMs: 60_000, streamIdleMs: 1_000 }
+  }, fetchImpl, async (base) => {
+    const url = new URL('/v1/responses', base);
+    const request = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' }
+    });
+    request.on('error', () => {});
+    request.end(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      stream: false,
+      input: [{ type: 'message', role: 'user', content: 'disconnect on error' }]
+    }));
+
+    await waitUntil(() => upstreamStarted, 1_000);
+    request.destroy();
+    await waitUntil(() => attemptSignal?.aborted, 1_000);
+    await waitUntil(() => upstreamCancelled, 1_000);
   });
 });
 

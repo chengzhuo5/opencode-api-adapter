@@ -365,7 +365,7 @@ function writeFailedEvent(res, code, message) {
 
 export async function relayUpstream(res, upstream, onUsage, signal) {
   if (!upstream.ok) {
-    await relayError(res, upstream);
+    await relayError(res, upstream, signal);
     return false;
   }
   const contentType = upstream.headers.get('content-type') || 'application/json';
@@ -473,14 +473,44 @@ async function pipeSseWithNormalization(body, res, initial = null, onUsage, sign
   return sawSuccessfulTerminal;
 }
 
-export async function relayError(res, upstream) {
-  const text = await upstream.text();
+export async function relayError(res, upstream, signal) {
+  let text;
+  try {
+    text = signal
+      ? await readResponseTextWithAbort(upstream.body, signal)
+      : await upstream.text();
+  } catch (error) {
+    if (signal?.aborted || res.destroyed) return;
+    throw error;
+  }
+  if (signal?.aborted || res.destroyed) return;
   let parsed;
   try { parsed = JSON.parse(text); } catch { parsed = { error: { message: text.slice(0, 500) } }; }
   if (!parsed?.error?.message) {
     parsed = { ...(parsed || {}), error: { ...(parsed?.error || {}), message: `upstream ${upstream.status} ${upstream.statusText || ''}`.trim() } };
   }
   sendJson(res, upstream.status, parsed);
+}
+
+async function readResponseTextWithAbort(body, signal) {
+  if (!body) return '';
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    while (true) {
+      const { done, value } = await readWithAbort(reader, signal);
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return text;
+  } finally {
+    if (signal?.aborted) {
+      try { await reader.cancel(signal.reason); } catch { /* noop */ }
+    }
+    try { reader.releaseLock(); } catch { /* noop */ }
+  }
 }
 
 export async function pipeBody(body, res, signal) {

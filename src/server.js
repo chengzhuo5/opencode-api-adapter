@@ -428,7 +428,7 @@ async function readRawBody(req, config) {
   return readBody(req, config);
 }
 
-async function readBody(req, config) {
+export async function readBody(req, config) {
   const maxBytes = Number.isFinite(config?.limits?.maxRequestBodyBytes)
     && config.limits.maxRequestBodyBytes > 0
     ? config.limits.maxRequestBodyBytes
@@ -448,34 +448,53 @@ async function readBody(req, config) {
   const chunks = [];
   let total = 0;
   const iterator = req[Symbol.asyncIterator]();
-  while (true) {
-    let timer = null;
-    const next = await Promise.race([
-      iterator.next(),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new RequestValidationError(
-          `request body idle timeout after ${idleMs} ms`,
-          408,
-          { closeConnection: true }
-        )), idleMs);
-        timer.unref?.();
-      })
-    ]).finally(() => {
-      if (timer) clearTimeout(timer);
-    });
-    if (next.done) break;
-    const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
-    total += chunk.length;
-    if (total > maxBytes) {
-      throw new RequestValidationError(
-        `request body exceeds ${maxBytes} bytes`,
-        413,
-        { closeConnection: true }
-      );
+  let iteratorClosed = false;
+  const closeIterator = () => {
+    if (iteratorClosed) return;
+    iteratorClosed = true;
+    try {
+      const closing = iterator.return?.();
+      if (closing && typeof closing.catch === 'function') closing.catch(() => {});
+    } catch {
+      // Iterator cleanup must never hide the validation error.
     }
-    chunks.push(chunk);
+  };
+  try {
+    while (true) {
+      let timer = null;
+      const next = await Promise.race([
+        iterator.next(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new RequestValidationError(
+            `request body idle timeout after ${idleMs} ms`,
+            408,
+            { closeConnection: true }
+          )), idleMs);
+          timer.unref?.();
+        })
+      ]).finally(() => {
+        if (timer) clearTimeout(timer);
+      });
+      if (next.done) {
+        iteratorClosed = true;
+        break;
+      }
+      const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
+      total += chunk.length;
+      if (total > maxBytes) {
+        throw new RequestValidationError(
+          `request body exceeds ${maxBytes} bytes`,
+          413,
+          { closeConnection: true }
+        );
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks, total).toString('utf8');
+  } catch (error) {
+    closeIterator();
+    throw error;
   }
-  return Buffer.concat(chunks, total).toString('utf8');
 }
 
 class RequestValidationError extends Error {
