@@ -9,7 +9,7 @@ export const DEFAULT_CONFIG = {
   apiBaseUrl: 'https://opencode.ai/zen/go/v1',
   apiKeyEnv: 'OPENCODE_GO_API_KEY',
   catalogFile: 'catalog.json',
-  timeouts: { requestMs: 600000, streamIdleMs: 180000 },
+  timeouts: { requestMs: 600000, streamIdleMs: 180000, drainMs: 15000 },
   limits: {
     maxRequestBodyBytes: 67108864,
     requestBodyIdleMs: 120000

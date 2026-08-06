@@ -15,6 +15,7 @@ import { buildCatalog } from './catalog.js';
 import { MODEL_META } from './modelMeta.js';
 
 const moduleRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DEFAULT_DRAIN_MS = 15_000;
 
 /**
  * 启动路由服务。CLI 与桌面壳共用同一入口：
@@ -109,13 +110,17 @@ export async function startRouter({
     return s;
   }
 
-  function beginDrain(s) {
+  function beginDrain(s, forceAfterMs = DEFAULT_DRAIN_MS) {
     if (!s) return Promise.resolve();
     const existing = retiring.get(s);
     if (existing) return existing;
     const closeIdle = () => s.closeIdleConnections?.();
     const idleCloser = setInterval(closeIdle, 50);
     idleCloser.unref?.();
+    const force = Number.isFinite(forceAfterMs) && forceAfterMs > 0
+      ? setTimeout(() => s.closeAllConnections?.(), forceAfterMs)
+      : null;
+    force?.unref?.();
     const drain = new Promise((resolve) => {
       s.close(() => resolve());
       closeIdle();
@@ -123,6 +128,7 @@ export async function startRouter({
       try { await s.__routerCleanup?.(); } catch { /* noop */ }
     }).finally(() => {
       clearInterval(idleCloser);
+      if (force) clearTimeout(force);
     });
     retiring.set(s, drain);
     drain.finally(() => retiring.delete(s)).catch(() => {});
@@ -136,13 +142,8 @@ export async function startRouter({
     server = null;
     activePrepared = null;
     if (!targets.size) return;
-    const drains = [...targets].map((target) => beginDrain(target));
-    const force = setTimeout(() => {
-      for (const target of targets) target.closeAllConnections?.();
-    }, forceAfterMs);
-    force.unref?.();
+    const drains = [...targets].map((target) => beginDrain(target, forceAfterMs));
     await Promise.allSettled(drains);
-    clearTimeout(force);
   }
 
   async function restartServer() {
@@ -159,7 +160,9 @@ export async function startRouter({
     return enqueueRestart(async () => {
       const previousServer = server;
       const previousPrepared = activePrepared;
-      const oldDrain = previousServer ? beginDrain(previousServer) : Promise.resolve();
+      const oldDrain = previousServer
+        ? beginDrain(previousServer, previousPrepared?.config?.timeouts?.drainMs ?? DEFAULT_DRAIN_MS)
+        : Promise.resolve();
       let nextServer = null;
       try {
         nextServer = await startServer(prepared);

@@ -70,7 +70,8 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
   "catalogFile": "catalog.json",
   "timeouts": {
     "requestMs": 600000,
-    "streamIdleMs": 180000
+    "streamIdleMs": 180000,
+    "drainMs": 15000
   },
   "limits": {
     "maxRequestBodyBytes": 67108864,
@@ -85,7 +86,7 @@ $env:OPENCODE_GO_API_KEY = "your OpenCode Go API key"
 }
 ```
 
-`limits.maxRequestBodyBytes` 同时预检 `Content-Length` 并统计 chunked 实际字节数，超限返回 413；`requestBodyIdleMs` 是读取请求体时连续两块数据之间的最大空闲时间，超时返回 408。默认 64 MiB / 120 秒，正常长上下文与图片请求不会被协议转换或注入额外字段。
+`limits.maxRequestBodyBytes` 同时预检 `Content-Length` 并统计 chunked 实际字节数，超限返回 413；`requestBodyIdleMs` 是读取请求体时连续两块数据之间的最大空闲时间，超时返回 408。`timeouts.drainMs` 控制热加载时旧 generation 等待活动连接自然结束的最长时间，超时会关闭旧连接，默认 15 秒。默认请求体限制为 64 MiB / 120 秒，正常长上下文与图片请求不会被协议转换或注入额外字段。
 
 ### 自定义服务商（模型级端点与通配符）
 

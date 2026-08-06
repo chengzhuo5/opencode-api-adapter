@@ -617,3 +617,10 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **管理页轮询**：新增 `admin/polling.js` 的 `createPollGate`；状态、用量、Codex、配置请求共享 single-flight promise，标签页隐藏时暂停后台状态/用量刷新，重新可见后立即刷新，避免服务重启期间请求堆积。
 - **回归证据**：新增 Anthropic `message_start`/`message_delta` usage 回归、unsupported 非末 Provider 回归及 3 个 poll gate 单测；全套测试 **256/256**，`node --check admin/app.js admin/polling.js`、`git diff --check` 均通过。
 - **缓存约束**：这些改动只修复 usage 观测、Provider 尝试选择和管理面轮询，不改变 DeepSeek 模型可见前缀、工具顺序、Provider 粘性、稳定压缩 checkpoint 或 hit/miss 字段。
+
+## 2026-08-06：热加载旧 generation 有界 drain（本阶段）
+
+- **根因**：`replaceServer()` 过去只调用 `server.close()`，旧 generation 的活动 SSE 永不结束时，热加载会把旧 server、health/usage 资源和连接永久留在 `retiring` 集合；`stop()` 的 force-close 只覆盖最终停止，不能治理连续 reload。
+- **修复**：`timeouts.drainMs`（默认 15 秒）现在同时用于热加载和停止 drain；到期调用 `closeAllConnections()`，清理 `__routerCleanup` 并释放 generation。保留活动请求在窗口内自然完成，超过窗口才强制结束。
+- **验证**：新增永不结束 SSE 的热加载回归（`drainMs=40`），确认 replacement listener 接管后旧上游 body 被 cancel、客户端流结束；`test/main.test.js` 4/4 通过。
+- **缓存约束**：只改变旧 generation 的资源生命周期，不改变新请求模型可见内容、DeepSeek hit/miss usage、Provider 粘性或工具顺序。

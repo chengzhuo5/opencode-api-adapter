@@ -70,7 +70,8 @@ Minimal configuration:
   "catalogFile": "catalog.json",
   "timeouts": {
     "requestMs": 600000,
-    "streamIdleMs": 180000
+    "streamIdleMs": 180000,
+    "drainMs": 15000
   },
   "limits": {
     "maxRequestBodyBytes": 67108864,
@@ -85,7 +86,7 @@ Minimal configuration:
 }
 ```
 
-`limits.maxRequestBodyBytes` checks both declared `Content-Length` and actual chunked bytes, returning 413 when exceeded. `requestBodyIdleMs` is the maximum idle gap between incoming body chunks and returns 408 on timeout. Defaults are 64 MiB / 120 seconds; normal long-context and image requests are not rewritten or given extra model-visible fields.
+`limits.maxRequestBodyBytes` checks both declared `Content-Length` and actual chunked bytes, returning 413 when exceeded. `requestBodyIdleMs` is the maximum idle gap between incoming body chunks and returns 408 on timeout. `timeouts.drainMs` bounds how long a retiring generation may keep active connections during hot reload before the old connections are closed; the default is 15 seconds. The request-body defaults are 64 MiB / 120 seconds; normal long-context and image requests are not rewritten or given extra model-visible fields.
 
 ### Custom providers (per-model endpoints and wildcards)
 

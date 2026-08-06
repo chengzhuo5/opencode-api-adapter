@@ -205,6 +205,52 @@ test('hot restart lets an active SSE generation drain while the replacement take
   }
 });
 
+test('hot restart force-drains an SSE generation that never finishes', async () => {
+  const port = await freePort();
+  let upstreamCancelled = false;
+  const fetchImpl = async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(
+        'event: response.created\n'
+        + 'data: {"type":"response.created","response":{"id":"r1","model":"deepseek-v4-flash","status":"in_progress"}}\n\n'
+      ));
+    },
+    cancel() {
+      upstreamCancelled = true;
+    }
+  }), {
+    status: 200,
+    headers: { 'content-type': 'text/event-stream' }
+  });
+  const ctx = await startTestRouter(testConfig({
+    port,
+    timeouts: { requestMs: 60_000, streamIdleMs: 60_000, drainMs: 40 }
+  }), { fetchImpl });
+  try {
+    const request = http.request({
+      host: '127.0.0.1',
+      port,
+      path: '/v1/responses',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' }
+    });
+    const responsePromise = once(request, 'response').then(([response]) => response);
+    request.end(JSON.stringify({
+      model: 'deepseek-v4-flash',
+      stream: true,
+      input: [{ type: 'message', role: 'user', content: 'never finish' }]
+    }));
+    const response = await responsePromise;
+    await waitUntil(() => ctx.router.server !== null && ctx.router.server.listening);
+    await withTimeout(ctx.router.restart(), 'replacement restart');
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    assert.equal(upstreamCancelled, true, 'retired generation must be force-drained');
+    assert.equal(response.destroyed || response.complete, true, 'retired client stream must end');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
 async function freePort() {
   const server = net.createServer();
   server.listen(0, '127.0.0.1');

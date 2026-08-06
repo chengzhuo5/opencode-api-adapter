@@ -6,7 +6,8 @@
   "catalogFile": "catalog.json",
   "timeouts": {
     "requestMs": 600000,
-    "streamIdleMs": 180000
+    "streamIdleMs": 180000,
+    "drainMs": 15000
   },
   "limits": {
     "maxRequestBodyBytes": 67108864,
