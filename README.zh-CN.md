@@ -161,7 +161,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
 三层机制互补：
 
 - `providerStickiness`：默认开启。同一 session/model 使用本地 HMAC 亲和键持续命中同一 Provider；明确 failover 成功后更新绑定并保留 `ttlMs`。Provider 身份包含端点与凭据，因此同一 URL 的备用凭据不会被误认为主凭据。健康恢复只影响新会话，不会把进行中的长会话自动切回。路由不会向模型请求体注入 session、时间或随机字段。
-- `healthCheck`：每 `intervalMs` 发送与上游协议匹配的探针（Responses/Chat/Messages 使用各自路径、请求体和鉴权头）；同一轮探测 single-flight，不会因慢 Provider 叠加周期请求；非流响应体会主动释放，热加载/停止时会取消未完成探针。探测失败的 provider 被排到新会话候选末尾（日志事件 `provider_health`）。同一 URL 的不同凭据独立探测。
+- `healthCheck`：每 `intervalMs` 发送与上游协议匹配的探针（Responses/Chat/Messages 使用各自路径、请求体和鉴权头）；未显式指定 `healthCheck.models` 时会扫描模型的字符串或数组 endpoint；同一轮探测 single-flight，不会因慢 Provider 叠加周期请求；非流响应体会主动释放，热加载/停止时会取消未完成探针。探测失败的 provider 被排到新会话候选末尾（日志事件 `provider_health`）。同一 URL 的不同凭据独立探测。
 - `circuitBreaker`：默认关闭（`enabled: false`），需要时开启。由真实请求成败驱动，按模型与端点/凭据 HMAC 身份独立统计，状态和日志不会暴露 API key。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。客户端取消半开探测会中性归还 permit，不计 provider 请求或失败。状态变化输出 `provider_circuit` 日志事件。
 
 ### 请求日志与用量统计

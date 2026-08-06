@@ -38,7 +38,9 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
     const targets = [];
     const explicit = Array.isArray(hc.models) ? hc.models : null;
     const models = explicit || Object.entries(config.models || {})
-      .filter(([, entry]) => entry && Array.isArray(entry.endpoint))
+      .filter(([, entry]) => entry && (
+        typeof entry.endpoint === 'string' || Array.isArray(entry.endpoint)
+      ))
       .map(([model]) => model);
     for (const model of models) {
       let route;

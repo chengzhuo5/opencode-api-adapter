@@ -605,6 +605,6 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 ## 2026-08-06：健康探测生命周期与连接池治理（本阶段）
 
 - **复现**：慢探针在 `intervalMs` 小于请求耗时时会叠加并发；Chat/Messages 非流探针返回后不 cancel body；Router 热加载/停止只清理定时器，不取消已发出的探针，旧 generation 仍可能在退役后写入 `provider_health`。
-- **修复**（`src/health.js`）：调度周期 single-flight；每个探针使用可取消的 `createAbortScope`，stop 时 abort 所有 in-flight probes；非 SSE body 在判断健康后主动 cancel；退役信号下不再更新 unhealthy 集合或触发状态回调；Responses SSE 读取也响应 abort。
-- **验证**：新增非流 body 释放、慢周期不重叠、stop abort/忽略 retired result 三个回归；health 定向 8/8、全套 **251/251**、smoke、双向四跳 mock、`node --check` 与 `git diff --check` 均通过。
+- **修复**（`src/health.js`）：调度周期 single-flight；每个探针使用可取消的 `createAbortScope`，stop 时 abort 所有 in-flight probes；非 SSE body 在判断健康后主动 cancel；退役信号下不再更新 unhealthy 集合或触发状态回调；Responses SSE 读取也响应 abort；无显式模型列表时同时扫描单 endpoint 和 endpoint 数组。
+- **验证**：新增单 endpoint 覆盖、非流 body 释放、慢周期不重叠、stop abort/忽略 retired result 四个回归；health 定向 9/9、全套 **251/251**、smoke、双向四跳 mock、`node --check` 与 `git diff --check` 均通过。
 - **缓存约束**：健康探针仍只发送固定最小 probe，不注入会话/时间/随机字段；本阶段未改变 DeepSeek 模型可见前缀、usage hit/miss、Provider 粘性或协议转换顺序。

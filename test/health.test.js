@@ -208,6 +208,37 @@ test('health monitor keeps separate state for credentials sharing one endpoint',
   assert.equal(monitor.status().filter((entry) => entry.unhealthy).length, 1);
 });
 
+test('health monitor scans single custom endpoints without an explicit model list', async () => {
+  const calls = [];
+  const monitor = createHealthMonitor({
+    config: {
+      models: {
+        'gpt-5.6-luna': {
+          upstream: 'responses',
+          endpoint: 'https://single.test/v1',
+          apiKey: 'key'
+        }
+      },
+      healthCheck: {
+        enabled: true,
+        intervalMs: 60_000,
+        timeoutMs: 5_000
+      }
+    },
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return new Response(JSON.stringify({ id: 'r1', model: 'gpt-5.6-luna' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  });
+  const result = await monitor.probeAll();
+  assert.equal(calls.length, 1);
+  assert.equal(result[0].healthy, true);
+  assert.equal(monitor.status()[0].endpoint, 'https://single.test/v1/responses');
+});
+
 test('health monitor cancels non-stream response bodies after probing', async () => {
   let cancelled = false;
   const monitor = createHealthMonitor({
