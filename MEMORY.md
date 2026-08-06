@@ -275,6 +275,13 @@ conversation/prefix/tool/provider 四类 HMAC 指纹齐全、`ok:true / error:nu
 packageVersion=0.2.0、包含 6 个资源且含 API client。此访问层不读取或改写 Router Request，
 不影响 DeepSeek 模型可见前缀、tools 顺序、Provider Affinity 或 cache usage 保真。
 
+**部署验证**：commit `adc1336` 已推送并重启 `CodexRouter`，Node PID
+`40936 → 51716`；线上仍为 loopback、无管理 token、`compress.enabled=false`、circuit
+breaker 关闭。`/admin` 与 `apiClient.js` 均 200，CSP/no-store/DENY frame 生效；带
+`Origin: https://evil.example` 的 `POST /api/restart` 返回 403，PID 保持 51716。
+真实 DeepSeek 请求 200 completed。实际浏览器加载 ES module 后显示 6 张总览卡、
+v0.2.0 与已连接状态，控制台无错误。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。
