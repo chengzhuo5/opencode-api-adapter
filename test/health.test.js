@@ -118,3 +118,37 @@ test('health monitor probes messages providers with their protocol and credentia
   assert.equal(calls.every((call) => call.init.headers['anthropic-version'] === '2023-06-01'), true);
   assert.equal(calls.every((call) => call.body.max_tokens === 1), true);
 });
+
+test('health monitor accepts response.incomplete as a healthy Responses terminal', async () => {
+  const bodies = [];
+  const monitor = createHealthMonitor({
+    config: {
+      models: {
+        'deepseek-v4-flash': {
+          upstream: 'responses',
+          endpoint: [{ url: 'https://deepseek.test/v1', apiKey: 'deepseek-key' }]
+        }
+      },
+      healthCheck: {
+        enabled: true,
+        models: ['deepseek-v4-flash'],
+        intervalMs: 60000,
+        timeoutMs: 5000
+      }
+    },
+    fetchImpl: async (url, init) => {
+      bodies.push(JSON.parse(init.body));
+      return new Response(
+        'event: response.incomplete\n'
+        + 'data: {"type":"response.incomplete","response":{"id":"r1","status":"incomplete"}}\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } }
+      );
+    }
+  });
+  const result = await monitor.probeAll();
+  assert.deepEqual(result, [{
+    key: 'deepseek-v4-flash::https://deepseek.test/v1/responses',
+    healthy: true
+  }]);
+  assert.equal(bodies[0].max_output_tokens, undefined, 'health probes must not force an incomplete response');
+});

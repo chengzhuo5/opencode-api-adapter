@@ -1059,6 +1059,31 @@ test('relayUpstream normalizes streamed responses completed events', async () =>
   assert.equal(written.includes('event: ping'), false);
 });
 
+test('relayUpstream treats response.incomplete as a valid terminal event', async () => {
+  const calls = [];
+  const res = {
+    writeHead: (status) => calls.push(['head', status]),
+    write: (chunk) => calls.push(['write', Buffer.isBuffer(chunk) ? chunk.toString() : String(chunk)]),
+    end: () => calls.push(['end'])
+  };
+  const upstream = new Response(new ReadableStream({
+    start(controller) {
+      const enc = new TextEncoder();
+      controller.enqueue(enc.encode(
+        'event: response.incomplete\n'
+        + 'data: {"type":"response.incomplete","response":{"id":"r1","model":"deepseek-v4-flash","status":"incomplete","usage":{"input_tokens":5,"output_tokens":16}}}\n\n'
+      ));
+      controller.enqueue(enc.encode('event: ping\ndata: {}\n\n'));
+      controller.close();
+    }
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  const ok = await relayUpstream(res, upstream);
+  const written = calls.filter((call) => call[0] === 'write').map((call) => call[1]).join('');
+  assert.equal(ok, true);
+  assert.match(written, /event: response\.incomplete/);
+  assert.equal(written.includes('event: ping'), false, 'incomplete is terminal and should stop the relay');
+});
+
 test('relayUpstream normalizes non-stream response json', async () => {
   const calls = [];
   const res = { writeHead: (s, h) => calls.push(['head', s]), write: (c) => calls.push(['write', Buffer.isBuffer(c) ? c.toString() : String(c)]), end: () => calls.push(['end']) };

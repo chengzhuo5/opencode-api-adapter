@@ -67,8 +67,7 @@ export function createHealthMonitor({ config, fetchImpl = globalThis.fetch, onSt
       if (target.upstream === 'responses'
         && res.ok
         && res.headers.get('content-type')?.includes('text/event-stream')) {
-        const text = await res.text();
-        healthy = text.includes('response.completed');
+        healthy = await readResponsesProbeTerminal(res.body);
       } else if (res.ok) {
         healthy = true;
       }
@@ -167,8 +166,27 @@ function buildProbeRequest(target) {
     body: {
       model: target.model,
       stream: true,
-      max_output_tokens: 1,
       input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'ok' }] }]
     }
   };
+}
+
+async function readResponsesProbeTerminal(body) {
+  const reader = body?.getReader();
+  if (!reader) return false;
+  const decoder = new TextDecoder();
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return false;
+      buffer += decoder.decode(value, { stream: true });
+      const terminal = buffer.match(/response\.(completed|incomplete|failed)/);
+      if (terminal) return terminal[1] !== 'failed';
+      if (buffer.length > 8192) buffer = buffer.slice(-4096);
+    }
+  } finally {
+    try { await reader.cancel(); } catch { /* noop */ }
+    reader.releaseLock();
+  }
 }

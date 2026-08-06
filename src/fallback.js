@@ -505,6 +505,7 @@ const RESPONSE_STATUS_FOR_EVENT = {
   'response.created': 'in_progress',
   'response.in_progress': 'in_progress',
   'response.completed': 'completed',
+  'response.incomplete': 'incomplete',
   'response.failed': 'failed'
 };
 
@@ -710,7 +711,7 @@ async function pipeSseWithNormalization(body, res, initial = null, onUsage) {
   let buffer = initial?.buffer ?? '';
   const keepAlive = startKeepAlive(res);
   let terminalSeen = false;
-  let sawCompleted = false;
+  let sawSuccessfulTerminal = false;
   const flush = (part) => {
     if (!part || !part.trim()) return;
     const parsed = parseSseEvent(part);
@@ -728,7 +729,10 @@ async function pipeSseWithNormalization(body, res, initial = null, onUsage) {
         res.write(sseEncode(parsed.event, obj));
         if (parsed.event === 'response.completed') {
           terminalSeen = true;
-          sawCompleted = true;
+          sawSuccessfulTerminal = true;
+        } else if (parsed.event === 'response.incomplete') {
+          terminalSeen = true;
+          sawSuccessfulTerminal = true;
         } else if (parsed.event === 'response.failed') {
           terminalSeen = true;
         }
@@ -765,9 +769,12 @@ async function pipeSseWithNormalization(body, res, initial = null, onUsage) {
     } catch { /* noop */ }
   } finally {
     stopKeepAlive(keepAlive);
+    if (terminalSeen) {
+      try { await reader.cancel(); } catch { /* noop */ }
+    }
     reader.releaseLock();
   }
-  return sawCompleted;
+  return sawSuccessfulTerminal;
 }
 
 export async function relayError(res, upstream) {

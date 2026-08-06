@@ -57,9 +57,17 @@ Responses 先 400，再尝试 OpenCode Responses 时网络失败；同类非法�
    `Promise.all` 并行探测，避免 provider 数量增加后探测时间线性累积。
 5. 请求入口现把非法 JSON/缺失 model 返回 400；模型或端点显式声明的 `apiKeyEnv`
    缺失时启动直接失败，不再静默发送 `undefined` key。
+6. 首次部署烟测发现 DeepSeek 在 `max_output_tokens` 用尽时会返回合法终态
+   `response.incomplete`。旧 relay 只把 `response.completed` 视为成功，因此把 200 +
+   usage 的完整 incomplete 流误记成 `stream_interrupted`；新健康探针又曾用
+   `max_output_tokens: 1` 并只认 completed，导致两个可用 provider 启动后都被误判
+   down。现 relay 把 completed/incomplete 都视为成功终态并立即取消剩余上游流；
+   健康探针不再强制极小输出上限，增量读取 SSE，遇到 completed/incomplete 立即判定
+   healthy，failed 才判定失败。
 
 **验证**：新增真实 tool_search 截断、三协议 provider failover/key、全局 Chat 数组、
-URL 规范化、独立 timeout、协议健康探针、请求/配置错误分类等回归；全套测试通过。
+URL 规范化、独立 timeout、协议健康探针、`response.incomplete` 终态、请求/配置错误
+分类等回归；全套测试通过。
 
 **部署注意**：`/api/restart` 只热加载配置，不会重载源码。本次代码必须重启
 Windows 服务 `CodexRouter` 后才生效；重启后应检查 `/healthz`、`/api/status`，
