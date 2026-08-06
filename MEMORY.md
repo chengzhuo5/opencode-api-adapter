@@ -636,3 +636,10 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **修复**：Responses 与 converted route 都以实际发送的 `requestBody.model` 作为 Provider 能力/熔断身份；tracker、日志和客户端响应继续使用原始 display model。unsupported 缓存仍按 `effective_model::endpoint`、5 分钟 TTL、严格错误文本隔离。
 - **验证**：新增“Luna 图片失败后 DeepSeek 文本仍成功”回归，且启用 breaker 验证不会共享错误状态；fallback 定向测试 **54/54** 通过。
 - **缓存约束**：此修复只隔离 Provider 能力状态，不改变升级后的请求内容、图片保留策略、DeepSeek 前缀或 usage hit/miss 字段。
+
+## 2026-08-06：本轮全面排查验收与部署状态
+
+- **源码 HEAD**：`5240fe4`，工作树干净并已推送 `origin/master`。
+- **验证**：全套测试 **259/259**；`npm run smoke` 通过；`npm pack --dry-run` 通过；`src/` 与 `admin/` 全量 `node --check` 通过；`git diff --check` 通过。
+- **本轮修复汇总**：Anthropic 流式 usage 合并、unsupported 非末 Provider 缓存、管理页 single-flight/隐藏暂停、热加载有界 drain、升级模型的 unsupported/breaker 隔离，以及管理页小屏/focus 可访问性。
+- **线上部署**：Windows `CodexRouter` 服务仍运行旧 Node PID `49600`，`/api/status` 显示 `healthCount=2`、`compress.enabled=false`、`circuitBreaker.enabled=false`；新健康探测生命周期、drain 和升级模型隔离代码需管理员执行 `Restart-Service CodexRouter -Force` 后再核验。
