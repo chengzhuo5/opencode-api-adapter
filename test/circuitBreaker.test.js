@@ -59,6 +59,29 @@ test('half-open probe success releases the next probe permit', () => {
   assert.equal(cb.isAvailable(key), true, 'second successful probe closes breaker');
 });
 
+test('cancelled half-open probe releases its permit without changing request totals', () => {
+  const cb = createCircuitBreaker({
+    ...cfg,
+    circuitBreaker: {
+      ...cfg.circuitBreaker,
+      failureThreshold: 1,
+      successThreshold: 2,
+      timeoutMs: 0
+    }
+  });
+  const key = 'gpt-5.6-luna::https://x/v1/responses';
+  cb.recordFailure(key);
+  const cancelledProbe = cb.allow(key);
+  assert.equal(cancelledProbe.usedHalfOpenPermit, true);
+  cb.releasePermit(key, cancelledProbe.usedHalfOpenPermit);
+  const replacementProbe = cb.allow(key);
+  assert.deepEqual(replacementProbe, { allowed: true, usedHalfOpenPermit: true });
+  const status = cb.statuses()[0];
+  assert.equal(status.state, 'half_open');
+  assert.equal(status.totalRequests, 1, 'client cancellation is not provider traffic');
+  assert.equal(status.failedRequests, 1);
+});
+
 test('half-open failure reopens breaker', () => {
   const cb = createCircuitBreaker({ ...cfg, circuitBreaker: { ...cfg.circuitBreaker, timeoutMs: 0 } });
   const key = 'gpt-5.6-luna::https://x/v1/responses';

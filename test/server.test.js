@@ -614,6 +614,118 @@ test('client disconnect also aborts an in-flight Messages provider stream', asyn
   });
 });
 
+test('client cancellation releases a half-open circuit probe for the next request', async () => {
+  let calls = 0;
+  let secondAttemptSignal = null;
+  const fetchImpl = async (_url, init) => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response(JSON.stringify({ error: { message: 'temporary failure' } }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    if (calls === 2) {
+      secondAttemptSignal = init.signal;
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            'event: response.created\n'
+            + 'data: {"type":"response.created","response":{"id":"r1","model":"gpt-5.6-luna","status":"in_progress"}}\n\n'
+          ));
+        }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'resp_2',
+      object: 'response',
+      status: 'completed',
+      model: 'gpt-5.6-luna',
+      output: [],
+      usage: { input_tokens: 1, output_tokens: 1 }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: null,
+    models: {
+      'gpt-5.6-luna': {
+        upstream: 'responses',
+        endpoint: 'https://provider.test/v1',
+        apiKey: 'provider-key'
+      }
+    },
+    circuitBreaker: {
+      enabled: true,
+      failureThreshold: 1,
+      successThreshold: 1,
+      timeoutMs: 60_000,
+      errorRateThreshold: 1,
+      minRequests: 100
+    }
+  }, fetchImpl, async (base) => {
+    const first = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] })
+    });
+    assert.equal(first.status, 500);
+
+    const url = new URL('/v1/responses', base);
+    const payload = JSON.stringify({ model: 'gpt-5.6-luna', stream: true, input: [] });
+    await new Promise((resolve, reject) => {
+      let received = '';
+      const socket = net.createConnection({ host: url.hostname, port: Number(url.port) });
+      const guard = setTimeout(() => {
+        socket.destroy();
+        reject(new Error('timed out waiting for half-open probe stream'));
+      }, 1_000);
+      guard.unref?.();
+      socket.once('connect', () => {
+        socket.write(
+          `POST ${url.pathname} HTTP/1.1\r\n`
+          + `Host: ${url.host}\r\n`
+          + 'Content-Type: application/json\r\n'
+          + `Content-Length: ${Buffer.byteLength(payload)}\r\n\r\n`
+          + payload
+        );
+      });
+      socket.on('data', (chunk) => {
+        received += chunk.toString('utf8');
+        if (!received.includes('event: response.created')) return;
+        clearTimeout(guard);
+        socket.destroy();
+        resolve();
+      });
+      socket.on('error', (error) => {
+        clearTimeout(guard);
+        reject(error);
+      });
+    });
+
+    const abortDeadline = Date.now() + 1_000;
+    while (!secondAttemptSignal?.aborted && Date.now() < abortDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(secondAttemptSignal?.aborted, true);
+
+    const third = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: 'gpt-5.6-luna', stream: false, input: [] })
+    });
+    assert.equal(third.status, 200, 'the cancelled half-open permit must be reusable');
+    assert.equal(calls, 3);
+  });
+});
+
 test('configured model without providers returns 503', async () => {
   await withServer({ apiKey: 'k', apiBaseUrl: null, models: {} }, async () => {}, async (base) => {
     const res = await fetch(`${base}/v1/responses`, {
@@ -1073,6 +1185,61 @@ test('session affinity sticks to backup credentials on the same endpoint', async
           model: 'deepseek-v4-flash',
           stream: false,
           metadata: { session_id: 'same-credential-session' },
+          input: [{ type: 'message', role: 'user', content: 'hello' }]
+        })
+      });
+      assert.equal(res.status, 200);
+    }
+  });
+
+  assert.deepEqual(calls, ['primary-key', 'backup-key', 'backup-key']);
+});
+
+test('non-streaming Chat success preserves the full Provider for session affinity', async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    const key = init.headers.authorization.replace(/^Bearer\s+/i, '');
+    calls.push(key);
+    if (key === 'primary-key') {
+      return new Response(JSON.stringify({ error: { message: 'temporary failure' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({
+      id: 'chatcmpl-1',
+      created: 1,
+      model: 'deepseek-v4-flash',
+      choices: [{ message: { role: 'assistant', content: 'ok' } }],
+      usage: { prompt_tokens: 2, completion_tokens: 1 }
+    }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  await withServer({
+    apiKey: 'global-key',
+    apiBaseUrl: null,
+    providerStickiness: { enabled: true, ttlMs: 60_000, maxEntries: 100 },
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'chat',
+        endpoint: [
+          { url: 'https://same-chat/v1', apiKey: 'primary-key' },
+          { url: 'https://same-chat/v1', apiKey: 'backup-key' }
+        ]
+      }
+    }
+  }, fetchImpl, async (base) => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const res = await fetch(`${base}/v1/responses`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'deepseek-v4-flash',
+          stream: false,
+          metadata: { session_id: 'same-chat-session' },
           input: [{ type: 'message', role: 'user', content: 'hello' }]
         })
       });

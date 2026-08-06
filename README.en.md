@@ -18,6 +18,7 @@
 - Codex config management: one click adds a `minar_route` provider to `~/.codex/config.toml` and switches `model_provider`/`model`, keeping the originals as commented markers, backing up before every change, and restoring from markers first (timestamped backups only with explicit user confirmation).
 - Structured console logs report multimodal and API fallback events without logging API keys, full prompts, or image data.
 - Client disconnects propagate through the Request Lifecycle to cancel the current provider attempt and locked SSE reader immediately; cancellations do not count as provider-breaker failures, and an already-read first event is not held until the next chunk or keep-alive.
+- If a client cancels a half-open circuit probe, the unique probe permit is released neutrally; provider request/failure counters are unchanged and the breaker cannot remain stuck in half-open.
 - Usable as a CLI or imported as a Node HTTP server.
 
 ## Architecture
@@ -160,7 +161,7 @@ The layers complement each other:
 
 - `providerStickiness` is enabled by default. A local HMAC affinity key keeps the same session/model on one Provider; a successful failover updates the binding for `ttlMs`. Provider identity includes both endpoint and credential, so backup credentials on one URL are not mistaken for the primary credential. Provider recovery affects new sessions and does not switch an active long conversation back mid-session. No session, timestamp, or random field is injected into the model request.
 - `healthCheck` sends protocol-correct probes in parallel every `intervalMs` (Responses/Chat/Messages use their own path, request body, and authentication headers); failed providers move to the end of the candidate order for new sessions (`provider_health` events). Different credentials on one URL are probed independently.
-- `circuitBreaker` is disabled by default (`enabled: false`); turn it on when needed. It is driven by real request outcomes and tracked per model plus an endpoint/credential HMAC identity, without exposing API keys in status or logs. A provider is tripped after `failureThreshold` consecutive failures, or once at least `minRequests` requests have an error rate above `errorRateThreshold`; after `timeoutMs` one half-open probe is allowed, and `successThreshold` consecutive probe successes close the breaker. State changes emit `provider_circuit` log events.
+- `circuitBreaker` is disabled by default (`enabled: false`); turn it on when needed. It is driven by real request outcomes and tracked per model plus an endpoint/credential HMAC identity, without exposing API keys in status or logs. A provider is tripped after `failureThreshold` consecutive failures, or once at least `minRequests` requests have an error rate above `errorRateThreshold`; after `timeoutMs` one half-open probe is allowed, and `successThreshold` consecutive probe successes close the breaker. Client cancellation of a half-open probe neutrally returns its permit without counting provider traffic or failure. State changes emit `provider_circuit` log events.
 
 ### Request log and usage stats
 
@@ -290,6 +291,7 @@ The router compresses only `function_call_output` (tool outputs) in history, kee
 
 - Granularity: only `function_call_output` items at or above the fixed `minOutputTokens` threshold are compressed; history remains append-only between thresholds and all other input items pass through verbatim.
 - Cache safety: each output fingerprint maps to a disk-persisted checkpoint. The exact compressed text is reused after a restart or in-memory eviction instead of regenerating old history; `cache_safety_check` tracks prefix drift per conversation.
+- Persistence stays off the synchronous hot path: raw archives and checkpoints use same-directory temporary files plus a first-writer-wins hard link. Independent concurrent writers that produce different summaries read the disk canonical checkpoint before forwarding, so all attempts converge on one model-visible prefix. In a local mock benchmark with four 4 MiB tool outputs, total time dropped from 318 ms / 283 ms maximum event-loop delay to 174 ms / 31 ms.
 - Explicit CCR retrieval: a compressed item becomes `<compressed text> [[ctx:<sha256>|<absolute path>]]`, where `<absolute path>` points to the original JSON archive (SHA-256 addressed, under `storeDir`). To retrieve the full original, read that file with the shell:
 
 ```powershell

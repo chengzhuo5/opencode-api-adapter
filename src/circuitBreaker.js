@@ -139,6 +139,13 @@ export function createCircuitBreaker(config = {}, { onStateChange = () => {} } =
     }
   }
 
+  function releasePermit(key, usedHalfOpenPermit = false) {
+    if (!cfg.enabled || !usedHalfOpenPermit) return;
+    const s = breakers.get(key);
+    if (!s || s.state !== 'half_open') return;
+    s.halfOpenPermits = Math.min(1, s.halfOpenPermits + 1);
+  }
+
   function isAvailable(key) {
     if (!cfg.enabled) return true;
     const s = breakers.get(key);
@@ -161,5 +168,14 @@ export function createCircuitBreaker(config = {}, { onStateChange = () => {} } =
     }));
   }
 
-  return { allow, recordSuccess, recordFailure, isAvailable, reset, statuses, keyOf };
+  return {
+    allow,
+    recordSuccess,
+    recordFailure,
+    releasePermit,
+    isAvailable,
+    reset,
+    statuses,
+    keyOf
+  };
 }

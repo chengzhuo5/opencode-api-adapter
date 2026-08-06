@@ -583,3 +583,12 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **修复**（`src/translate/chatToResponses.js`）：非流式 `chatToResponsesObject` 与流式 `translateChatStreamToResponses` 两条路径都检测 `name === 'apply_patch'`，把 `function.arguments` 里 JSON 转义的字符串反转义为 `input`，输出 `custom_tool_call`（保留 call_id），并发出 `response.custom_tool_call.done`。其他工具维持 `function_call`。
 - **测试**：`test/chatToResponses.test.js` 新增 2 个用例（非流式/流式 apply_patch 还原）；**172 测试全过**。已提交 `744c6b3` 并推送，服务重启（PID 41804）验证转换正确。
 - **注意**：该修复是用户手动写的代码（工作区未提交时我确认后补了测试），不是路由自动生成的。
+
+## 2026-08-06：Provider 取消路径与稳定 checkpoint 并发写入（本阶段）
+
+- **半开熔断取消死锁**：半开状态唯一 probe 在客户端断开后过去不会归还 permit，后续请求会永久得到 502。`src/circuitBreaker.js` 新增 `releasePermit()`；`src/providerExecution.js` 的所有 Responses/Chat/Messages 客户端取消分支都传递 `breakerKey + permit`，中性释放，不增加 `totalRequests` / `failedRequests`，也不污染 provider 健康统计。
+- **Converted Route Provider 身份**：Chat/Messages 非流成功现在把完整 immutable Provider 交给 `recordSuccess()`，同 URL 的备用凭据会正确更新会话粘性和 provider endpoint 观测，不再降级成 endpoint 字符串。
+- **压缩热路径**：`src/compression.js` 的 checkpoint、原文归档和读取改为 `node:fs/promises`；单个大 item 只做一次 `JSON.stringify`，复用序列化结果计算 hash/字符数/token/归档。磁盘发布采用同目录临时文件 + hard link 的 first-writer-wins；独立并发 writer 若生成不同摘要，会读取磁盘 canonical checkpoint，保证模型可见前缀收敛且不每轮重写历史。
+- **性能证据**：本地 mock 的 4 × 4 MiB 工具输出基线为总耗时 318 ms、最大事件循环延迟 283 ms；优化后为 174 ms、31 ms。线上 `compress.enabled=false` 仍按用户决定保持关闭。
+- **验证**：新增独立 writer 收敛、半开取消 HTTP/TCP 回归与 Chat 同 URL 双凭据粘性回归；定向和全套测试均为 **245/245**，`npm run smoke`、GPT→DeepSeek→GPT→DeepSeek 与反向四跳 mock、`npm pack --dry-run`、全部 `node --check`、`git diff --check` 均通过。
+- **约束复核**：已阅读并纳入 `docs/superpowers/specs/2026-08-06-deepseek-cache-safe-router-recommendations.md`（commit `45839bc`）；本阶段未改变 DeepSeek hit/miss usage、Provider 粘性、确定性工具顺序/模型前缀、稳定 checkpoint 或按实际费用评估逻辑，也未记录 API key、完整 Prompt、图片或原始工具输出。

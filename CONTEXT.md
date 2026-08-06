@@ -21,7 +21,7 @@ A local HMAC identity for the exact endpoint/credential pair. Affinity, health, 
 _Avoid_: endpoint-only identity, API-key logging
 
 **Provider Execution**:
-The complete attempt lifecycle for a Route: Provider ordering, breaker checks, timeout, failover, response relay, and usage outcome.
+The complete attempt lifecycle for a Route: Provider ordering, breaker checks, timeout, failover, response relay, usage outcome, and neutral client-cancellation cleanup.
 _Avoid_: forwarding helper, fallback loop
 
 **Protocol Adapter**:
@@ -49,7 +49,7 @@ Local HMAC fingerprints of the model-visible request, ordered tool schema, conve
 _Avoid_: prompt logging, trace payload
 
 **Compression Checkpoint**:
-A content-addressed, disk-persisted compressed tool output reused byte-for-byte across turns, concurrent requests, cache eviction, and process restart.
+A content-addressed, disk-persisted compressed tool output reused byte-for-byte across turns, concurrent requests, cache eviction, and process restart. Writers publish through an asynchronous same-directory temporary file plus first-writer-wins hard link, then read the canonical checkpoint when another writer wins.
 _Avoid_: regenerated summary, transient compression
 
 **Usage Store**:

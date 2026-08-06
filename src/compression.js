@@ -1,6 +1,13 @@
 import { logEvent } from './logger.js';
-import { createHash } from 'node:crypto';
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import {
+  access,
+  link,
+  mkdir,
+  readFile,
+  unlink,
+  writeFile
+} from 'node:fs/promises';
 import path from 'node:path';
 
 const DEFAULT_CACHE_SIZE = 1000;
@@ -21,7 +28,7 @@ const CHECKPOINT_VERSION = 1;
  */
 
 export function outputFingerprint(output) {
-  return createHash('sha256').update(JSON.stringify(output)).digest('hex');
+  return fingerprintSerialized(JSON.stringify(output));
 }
 
 export function outputToMessages(output) {
@@ -53,25 +60,22 @@ export async function compressOutput({ output, model, client }) {
   return { text, stats: result.stats || {} };
 }
 
-export function storeOutput(output, storeDir) {
+export async function storeOutput(output, storeDir) {
   if (!storeDir) return null;
-  const hash = outputFingerprint(output);
-  mkdirSync(storeDir, { recursive: true });
-  const file = path.join(storeDir, `${hash}.json`);
-  if (!existsSync(file)) writeFileSync(file, JSON.stringify(output));
-  return file;
+  const serialized = JSON.stringify(output);
+  const hash = fingerprintSerialized(serialized);
+  return storeSerializedOutput(serialized, hash, storeDir);
 }
 
 function checkpointPath(hash, storeDir) {
   return storeDir ? path.join(storeDir, `${hash}.checkpoint.json`) : null;
 }
 
-export function loadCompressionCheckpoint(hash, storeDir) {
+export async function loadCompressionCheckpoint(hash, storeDir) {
   if (!storeDir || !/^[a-f0-9]{64}$/.test(String(hash ?? ''))) return null;
   const file = checkpointPath(hash, storeDir);
-  if (!existsSync(file)) return null;
   try {
-    const checkpoint = JSON.parse(readFileSync(file, 'utf8'));
+    const checkpoint = JSON.parse(await readFile(file, 'utf8'));
     if (checkpoint?.version !== CHECKPOINT_VERSION || typeof checkpoint.text !== 'string') return null;
     return checkpoint.text;
   } catch {
@@ -79,29 +83,34 @@ export function loadCompressionCheckpoint(hash, storeDir) {
   }
 }
 
-function storeCompressionCheckpoint(hash, text, storeDir) {
-  if (!storeDir) return null;
-  mkdirSync(storeDir, { recursive: true });
+async function storeCompressionCheckpoint(hash, text, storeDir) {
+  if (!storeDir) return text;
   const file = checkpointPath(hash, storeDir);
-  if (!existsSync(file)) {
-    writeFileSync(file, JSON.stringify({
-      version: CHECKPOINT_VERSION,
-      checkpoint_id: hash,
-      text
-    }));
+  const created = await writeOnceAtomic(file, JSON.stringify({
+    version: CHECKPOINT_VERSION,
+    checkpoint_id: hash,
+    text
+  }));
+  if (created) return text;
+  const canonical = await loadCompressionCheckpoint(hash, storeDir);
+  if (canonical === null) {
+    throw new Error(`compression checkpoint is unreadable: ${file}`);
   }
-  return file;
+  return canonical;
 }
 
 /**
  * HTTP 取回（GET /v1/ctx/<sha256>）：
  * 按存档指纹返回原始 function_call_output JSON；哈希非法或文件不存在时返回 null。
  */
-export function loadOutput(hash, storeDir) {
+export async function loadOutput(hash, storeDir) {
   if (!storeDir || !/^[a-f0-9]{64}$/.test(String(hash ?? ''))) return null;
   const file = path.join(storeDir, `${hash}.json`);
-  if (!existsSync(file)) return null;
-  return JSON.parse(readFileSync(file, 'utf8'));
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch {
+    return null;
+  }
 }
 
 export async function compressInput(input, ctx) {
@@ -136,9 +145,10 @@ export async function compressInput(input, ctx) {
       out.push(item);
       continue;
     }
-    const fingerprint = outputFingerprint(item);
-    const charsBefore = JSON.stringify(item).length;
-    const tokensBefore = estimateTokens(JSON.stringify(item));
+    const serializedItem = JSON.stringify(item);
+    const fingerprint = fingerprintSerialized(serializedItem);
+    const charsBefore = serializedItem.length;
+    const tokensBefore = estimateTokens(serializedItem);
     if (tokensBefore < (ctx.minOutputTokens ?? 0)) {
       meta.overall.outputs_skipped += 1;
       out.push(item);
@@ -150,9 +160,14 @@ export async function compressInput(input, ctx) {
       : (typeof text?.then === 'function' ? 'inflight' : 'memory');
     if (typeof text?.then === 'function') text = await text;
     if (text === undefined) {
-      text = loadCompressionCheckpoint(fingerprint, ctx.storeDir);
-      if (text !== null) {
-        ctx.cache.set(fingerprint, text);
+      const diskCheckpoint = await loadCompressionCheckpoint(fingerprint, ctx.storeDir);
+      const concurrent = ctx.cache.get(fingerprint);
+      if (concurrent !== undefined) {
+        checkpointSource = typeof concurrent?.then === 'function' ? 'inflight' : 'memory';
+        text = typeof concurrent?.then === 'function' ? await concurrent : concurrent;
+      } else if (diskCheckpoint !== null) {
+        text = diskCheckpoint;
+        ctx.cache.set(fingerprint, diskCheckpoint);
         checkpointSource = 'disk';
       } else {
         text = undefined;
@@ -161,10 +176,14 @@ export async function compressInput(input, ctx) {
     let cached = text !== undefined;
     if (text === undefined) {
       const pending = compressOutput({ output: item.output, model: ctx.model, client: ctx.client })
-        .then((result) => {
-          ctx.cache.set(fingerprint, result.text);
-          storeCompressionCheckpoint(fingerprint, result.text, ctx.storeDir);
-          return result.text;
+        .then(async (result) => {
+          const canonical = await storeCompressionCheckpoint(
+            fingerprint,
+            result.text,
+            ctx.storeDir
+          );
+          ctx.cache.set(fingerprint, canonical);
+          return canonical;
         })
         .catch((error) => {
           if (ctx.cache.get(fingerprint) === pending) ctx.cache.delete(fingerprint);
@@ -179,7 +198,11 @@ export async function compressInput(input, ctx) {
       cached = false;
       checkpointSource = 'generated';
     }
-    const archiveFile = storeOutput(item, ctx.storeDir);
+    const archiveFile = await storeSerializedOutput(
+      serializedItem,
+      fingerprint,
+      ctx.storeDir
+    );
     const marker = archiveFile ? ` [[ctx:${fingerprint}|${archiveFile}]]` : '';
     const charsAfter = text.length;
     const tokensAfter = estimateTokens(text);
@@ -232,6 +255,41 @@ export async function compressInput(input, ctx) {
     ? Math.round((1 - meta.overall.chars_after / meta.overall.chars_before) * 100)
     : 0;
   return out;
+}
+
+function fingerprintSerialized(serialized) {
+  return createHash('sha256').update(serialized).digest('hex');
+}
+
+async function storeSerializedOutput(serialized, hash, storeDir) {
+  if (!storeDir) return null;
+  const file = path.join(storeDir, `${hash}.json`);
+  await writeOnceAtomic(file, serialized);
+  return file;
+}
+
+async function writeOnceAtomic(file, content) {
+  await mkdir(path.dirname(file), { recursive: true });
+  try {
+    await access(file);
+    return false;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const temporary = path.join(
+    path.dirname(file),
+    `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`
+  );
+  await writeFile(temporary, content, { flag: 'wx' });
+  try {
+    await link(temporary, file);
+    return true;
+  } catch (error) {
+    if (error?.code === 'EEXIST') return false;
+    throw error;
+  } finally {
+    try { await unlink(temporary); } catch { /* noop */ }
+  }
 }
 
 export async function maybeCompressInput(body, config, client, storeDir, cache, safetyMap, stats, options = {}) {

@@ -18,6 +18,7 @@
 - Codex 配置管理：一键在 `~/.codex/config.toml` 中加入 `minar_route` provider 并切换 model_provider/model，注释保留原值、每次修改前时间戳备份、还原优先用注释字段，失败才提示从备份恢复。
 - 结构化控制台日志：记录多模态降级和 API fallback，不记录 API key、完整 prompt 或图片内容。
 - 客户端断开会沿 Request Lifecycle 立即取消当前 Provider attempt 与锁定的 SSE reader；取消不计入 Provider 熔断失败，首个已读取事件也不会滞留到下一 chunk/keep-alive。
+- 如果客户端取消的是半开熔断探测，请求会中性释放唯一探测 permit；不会增加 provider 请求/失败计数，也不会把熔断器永久卡在半开状态。
 - 支持作为 CLI 启动，也可以导入 `createRouter` 构建自己的 Node HTTP 服务。
 
 ## 工作原理
@@ -161,7 +162,7 @@ opencode-api-adapter --config "C:\path\to\config.json"
 
 - `providerStickiness`：默认开启。同一 session/model 使用本地 HMAC 亲和键持续命中同一 Provider；明确 failover 成功后更新绑定并保留 `ttlMs`。Provider 身份包含端点与凭据，因此同一 URL 的备用凭据不会被误认为主凭据。健康恢复只影响新会话，不会把进行中的长会话自动切回。路由不会向模型请求体注入 session、时间或随机字段。
 - `healthCheck`：每 `intervalMs` 并行发送与上游协议匹配的探针（Responses/Chat/Messages 使用各自路径、请求体和鉴权头）；探测失败的 provider 被排到新会话候选末尾（日志事件 `provider_health`）。同一 URL 的不同凭据独立探测。
-- `circuitBreaker`：默认关闭（`enabled: false`），需要时开启。由真实请求成败驱动，按模型与端点/凭据 HMAC 身份独立统计，状态和日志不会暴露 API key。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。状态变化输出 `provider_circuit` 日志事件。
+- `circuitBreaker`：默认关闭（`enabled: false`），需要时开启。由真实请求成败驱动，按模型与端点/凭据 HMAC 身份独立统计，状态和日志不会暴露 API key。连续失败达到 `failureThreshold`，或请求数达到 `minRequests` 后错误率超过 `errorRateThreshold`，即熔断跳过该 provider；`timeoutMs` 后放行一次半开探测，连续成功达到 `successThreshold` 后恢复。客户端取消半开探测会中性归还 permit，不计 provider 请求或失败。状态变化输出 `provider_circuit` 日志事件。
 
 ### 请求日志与用量统计
 
@@ -296,6 +297,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File C:\Code\AI\opencode-api-adap
 
 - 压缩粒度：只有达到固定 `minOutputTokens` 阈值的 `function_call_output` 才独立压缩；阈值之间保持历史 append-only，其余 input 项原样透传。
 - 缓存安全：同一输出指纹对应一个磁盘持久化 checkpoint；服务重启或内存缓存淘汰后仍复用相同压缩文本，不会每轮重写旧前缀。每次请求输出 `cache_safety_check`，并按会话校验前缀漂移。
+- 持久化是异步热路径：原文归档与 checkpoint 使用同目录临时文件和 first-writer-wins hard link 原子发布；独立并发 writer 若生成不同摘要，会读取磁盘 canonical checkpoint，最终向模型发送同一字节前缀。4 × 4 MiB 工具输出本地 mock 基准从 318 ms / 283 ms 最大事件循环延迟降至 174 ms / 31 ms。
 - CCR 显式取回：被压缩项的输出格式为 `<压缩文本> [[ctx:<sha256>|<绝对路径>]]`，其中 `<绝对路径>` 是原文 JSON 存档（SHA-256 内容寻址，位于 `storeDir`）。需要完整原文时，用 shell 读取该文件即可：
 
 ```powershell

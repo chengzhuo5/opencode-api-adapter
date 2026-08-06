@@ -175,7 +175,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
         });
       } catch {
         if (clientDisconnected(options)) {
-          recordClientDisconnect(options, provider.endpoint);
+          recordClientDisconnect(options, breakerKey, permit, provider.endpoint);
           return;
         }
         recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'network_error');
@@ -238,7 +238,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
           }
         }
         if (clientDisconnected(options)) {
-          recordClientDisconnect(options, provider.endpoint, usage);
+          recordClientDisconnect(options, breakerKey, permit, provider.endpoint, usage);
         } else if (relayOk) {
           recordSuccess(options, breakerKey, permit, provider, upstream.status, usage);
         } else {
@@ -249,7 +249,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
 
       if (clientDisconnected(options)) {
         await discardResponseBody(upstream);
-        recordClientDisconnect(options, provider.endpoint);
+        recordClientDisconnect(options, breakerKey, permit, provider.endpoint);
         return;
       }
       recordFailure(options, breakerKey, permit, provider.endpoint, upstream.status, 'http_error');
@@ -337,7 +337,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
         });
       } catch (error) {
         if (clientDisconnected(options)) {
-          recordClientDisconnect(options, provider.endpoint);
+          recordClientDisconnect(options, breakerKey, permit, provider.endpoint);
           return;
         }
         recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'network_error');
@@ -354,7 +354,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
       if (!upstream.ok) {
         if (clientDisconnected(options)) {
           await discardResponseBody(upstream);
-          recordClientDisconnect(options, provider.endpoint);
+          recordClientDisconnect(options, breakerKey, permit, provider.endpoint);
           return;
         }
         recordFailure(options, breakerKey, permit, provider.endpoint, upstream.status, 'http_error');
@@ -381,7 +381,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
         try {
           if (clientDisconnected(options) || res.destroyed) {
             await discardResponseBody(upstream);
-            recordClientDisconnect(options, provider.endpoint);
+            recordClientDisconnect(options, breakerKey, permit, provider.endpoint);
             return;
           }
           res.writeHead(200, {
@@ -401,7 +401,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
           }, { signal: attempt.signal });
           if (!res.destroyed) res.end();
           if (clientDisconnected(options)) {
-            recordClientDisconnect(options, provider.endpoint, usage);
+            recordClientDisconnect(options, breakerKey, permit, provider.endpoint, usage);
             return;
           }
           if (!streamOk) {
@@ -410,7 +410,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
           }
         } catch (error) {
           if (clientDisconnected(options)) {
-            recordClientDisconnect(options, provider.endpoint, usage);
+            recordClientDisconnect(options, breakerKey, permit, provider.endpoint, usage);
             return;
           }
           recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'stream_interrupted');
@@ -432,7 +432,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
         response = await upstream.json();
       } catch {
         if (clientDisconnected(options)) {
-          recordClientDisconnect(options, provider.endpoint);
+          recordClientDisconnect(options, breakerKey, permit, provider.endpoint);
           return;
         }
         recordFailure(options, breakerKey, permit, provider.endpoint, 502, 'invalid_json');
@@ -447,7 +447,13 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
       }
 
       if (clientDisconnected(options) || res.destroyed) {
-        recordClientDisconnect(options, provider.endpoint, extractUsage(response));
+        recordClientDisconnect(
+          options,
+          breakerKey,
+          permit,
+          provider.endpoint,
+          extractUsage(response)
+        );
         return;
       }
       const usage = extractUsage(response);
@@ -463,7 +469,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
       } else {
         sendJson(res, upstream.status, normalized);
       }
-      recordSuccess(options, breakerKey, permit, provider.endpoint, upstream.status, usage);
+      recordSuccess(options, breakerKey, permit, provider, upstream.status, usage);
       if (options.responseFallback) {
         logEvent(config, {
           event: 'api_fallback_result',
@@ -579,7 +585,8 @@ function clientDisconnected(options) {
   return options.signal?.aborted === true;
 }
 
-function recordClientDisconnect(options, endpoint, usage) {
+function recordClientDisconnect(options, breakerKey, permit, endpoint, usage) {
+  options.breaker?.releasePermit(breakerKey, permit.usedHalfOpenPermit);
   options.tracker?.record({
     endpoint,
     provider_endpoint_hash: options.cacheDiagnostics?.endpoint(endpoint) ?? null,

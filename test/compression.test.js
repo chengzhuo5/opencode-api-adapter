@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -130,6 +136,51 @@ test('compressInput coalesces concurrent checkpoint generation for the same outp
   assert.equal(first[0].output, second[0].output);
   assert.equal(firstCtx.meta.outputs[0].checkpointSource, 'generated');
   assert.equal(secondCtx.meta.outputs[0].checkpointSource, 'inflight');
+});
+
+test('independent concurrent writers converge on one atomic disk checkpoint', async () => {
+  const storeDir = tmpdir();
+  let ready = 0;
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const client = (text) => ({
+    compress: async () => {
+      ready += 1;
+      if (ready === 2) release();
+      await gate;
+      return { messages: [{ role: 'user', content: text }], stats: {} };
+    }
+  });
+  const item = {
+    type: 'function_call_output',
+    id: 'fco-independent',
+    call_id: 'c-independent',
+    output: 'A'.repeat(1000)
+  };
+  const firstCtx = {
+    client: client('checkpoint-a'),
+    model: 'x',
+    storeDir,
+    cache: new Map(),
+    log: () => {}
+  };
+  const secondCtx = {
+    client: client('checkpoint-b'),
+    model: 'x',
+    storeDir,
+    cache: new Map(),
+    log: () => {}
+  };
+  const [first, second] = await Promise.all([
+    compressInput([item], firstCtx),
+    compressInput([item], secondCtx)
+  ]);
+  assert.equal(first[0].output, second[0].output);
+  assert.match(first[0].output, /^checkpoint-[ab] /);
+  const names = readdirSync(storeDir);
+  assert.equal(names.filter((name) => name.endsWith('.checkpoint.json')).length, 1);
+  assert.equal(names.some((name) => name.endsWith('.tmp')), false);
+  rmSync(storeDir, { recursive: true, force: true });
 });
 
 test('compressInput reuses a persisted checkpoint after process-local cache loss', async () => {
@@ -338,12 +389,12 @@ test('maybeCompressInput accumulates token totals and logs cumulative ratio', as
   assert.equal(last.total_tokens_before, first.tokens_before * 2, 'cached reuse still counts forwarded size');
 });
 
-test('loadOutput retrieves archived output and rejects bad hashes', () => {
+test('loadOutput retrieves archived output and rejects bad hashes', async () => {
   const dir = tmpdir();
   const item = { type: 'function_call_output', id: 'fco1', call_id: 'c1', output: 'secret' };
-  storeOutput(item, dir);
+  await storeOutput(item, dir);
   const hash = outputFingerprint(item);
-  assert.deepEqual(loadOutput(hash, dir), item, 'should return the archived original JSON');
-  assert.equal(loadOutput('zzz-not-a-hash', dir), null, 'bad hash must be rejected');
-  assert.equal(loadOutput(hash, null), null, 'no store dir must yield null');
+  assert.deepEqual(await loadOutput(hash, dir), item, 'should return the archived original JSON');
+  assert.equal(await loadOutput('zzz-not-a-hash', dir), null, 'bad hash must be rejected');
+  assert.equal(await loadOutput(hash, null), null, 'no store dir must yield null');
 });

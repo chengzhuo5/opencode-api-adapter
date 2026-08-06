@@ -83,7 +83,7 @@ export function createRouter(config, {
           sendJson(res, 400, { error: { message: `invalid ctx hash: ${hash}` } });
           return;
         }
-        const archived = loadOutput(hash, ctxStoreDir);
+        const archived = await loadOutput(hash, ctxStoreDir);
         if (!archived) {
           sendJson(res, 404, { error: { message: `ctx ${hash} not found` } });
           return;
