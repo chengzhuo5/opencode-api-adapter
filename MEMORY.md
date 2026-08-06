@@ -629,3 +629,10 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 
 - **修复**：`admin/style.css` 为 topbar、按钮组和小屏布局增加换行；600px 以下收窄侧栏、把操作区堆叠到可点击宽度、保留表格横向滚动，并给导航/按钮/select/config editor 增加 `:focus-visible` 焦点环。
 - **约束**：纯静态 UI 改动，不改变管理 API、轮询 single-flight 或任何模型可见请求。
+
+## 2026-08-06：升级模型的 unsupported / breaker 隔离（本阶段）
+
+- **根因**：图片触发 DeepSeek→Luna 后，Provider Execution 仍用客户端 `displayModel` 作为 unsupported 缓存和 breaker key；Luna 的明确不支持错误会污染 `deepseek-v4-flash` 的后续普通文本请求。
+- **修复**：Responses 与 converted route 都以实际发送的 `requestBody.model` 作为 Provider 能力/熔断身份；tracker、日志和客户端响应继续使用原始 display model。unsupported 缓存仍按 `effective_model::endpoint`、5 分钟 TTL、严格错误文本隔离。
+- **验证**：新增“Luna 图片失败后 DeepSeek 文本仍成功”回归，且启用 breaker 验证不会共享错误状态；fallback 定向测试 **54/54** 通过。
+- **缓存约束**：此修复只隔离 Provider 能力状态，不改变升级后的请求内容、图片保留策略、DeepSeek 前缀或 usage hit/miss 字段。

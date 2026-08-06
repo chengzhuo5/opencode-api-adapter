@@ -107,15 +107,16 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
   }
 
   const requestBody = normalizeResponsesRequest(body);
+  const upstreamModel = requestBody.model || displayModel;
   options.tracker?.annotate(options.cacheDiagnostics?.request('responses', requestBody));
   for (let index = 0; index < providers.length; index++) {
     const provider = providers[index];
     const nextProvider = providers[index + 1];
     const last = !nextProvider;
 
-    if (isUnsupportedCached(displayModel, provider.endpoint)) {
-      if (!isUnsupportedNotified(displayModel, provider.endpoint)) {
-        markUnsupportedNotified(displayModel, provider.endpoint);
+    if (isUnsupportedCached(upstreamModel, provider.endpoint)) {
+      if (!isUnsupportedNotified(upstreamModel, provider.endpoint)) {
+        markUnsupportedNotified(upstreamModel, provider.endpoint);
         logResponsesFallback(config, displayModel, provider, nextProvider, 'responses_unsupported');
       }
       if (last) {
@@ -132,7 +133,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
     }
 
     const breakerKey = options.breaker?.keyOf(
-      displayModel,
+      upstreamModel,
       provider.endpoint,
       provider.apiKey
     ) ?? null;
@@ -254,7 +255,7 @@ async function forwardResponsesRoute(res, body, route, config, fetchImpl, displa
       }
       recordFailure(options, breakerKey, permit, provider.endpoint, upstream.status, 'http_error');
       if (await isUnsupportedResponse(upstream)) {
-        rememberUnsupported(displayModel, provider.endpoint);
+        rememberUnsupported(upstreamModel, provider.endpoint);
       }
       logResponsesFallback(config, displayModel, provider, nextProvider, 'http_error', upstream.status);
       if (!last) {
@@ -295,6 +296,7 @@ async function forwardChatFallback(res, body, config, fetchImpl, displayModel, o
 async function forwardConvertedRoute(res, body, route, config, fetchImpl, displayModel, options, adapter) {
   const effective = options.replay ? { ...body, stream: false } : body;
   const requestBody = adapter.requestBody(effective);
+  const upstreamModel = requestBody.model || displayModel;
   options.tracker?.annotate(options.cacheDiagnostics?.request(route.upstream, requestBody));
   const providers = routeProviders(route, config);
   for (let index = 0; index < providers.length; index++) {
@@ -302,7 +304,7 @@ async function forwardConvertedRoute(res, body, route, config, fetchImpl, displa
     const nextProvider = providers[index + 1];
     const last = !nextProvider;
     const breakerKey = options.breaker?.keyOf(
-      displayModel,
+      upstreamModel,
       provider.endpoint,
       provider.apiKey
     ) ?? null;

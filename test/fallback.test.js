@@ -549,6 +549,82 @@ test('unsupported cache skips a permanently unsupported non-final provider', asy
   clearUnsupportedCache();
 });
 
+test('unsupported cache uses the effective upgraded model, not the display model', async () => {
+  clearUnsupportedCache();
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    calls.push(body.model);
+    if (body.model === 'gpt-5.6-luna') {
+      return new Response(
+        JSON.stringify({ error: { message: 'model not supported by this endpoint' } }),
+        { status: 400, headers: { 'content-type': 'application/json' } }
+      );
+    }
+    return new Response(
+      JSON.stringify({ id: 'resp_ok', object: 'response', model: body.model }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  };
+  const cfg = {
+    apiKey: 'k',
+    apiBaseUrl: null,
+    models: {
+      'deepseek-v4-flash': {
+        upstream: 'responses',
+        endpoint: 'https://provider/v1',
+        apiKey: 'k'
+      },
+      'gpt-5.6-luna': {
+        upstream: 'responses',
+        endpoint: 'https://provider/v1',
+        apiKey: 'k'
+      }
+    },
+    circuitBreaker: {
+      enabled: true,
+      failureThreshold: 1,
+      successThreshold: 1,
+      timeoutMs: 60_000,
+      errorRateThreshold: 1,
+      minRequests: 100
+    }
+  };
+  await withServer(cfg, fetchImpl, async (base) => {
+    const image = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: false,
+        input: [{
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_image', image_url: 'https://example.test/image.png' }]
+        }]
+      })
+    });
+    assert.equal(image.status, 400);
+
+    const text = await fetch(base + '/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        stream: false,
+        input: [{
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'plain text' }]
+        }]
+      })
+    });
+    assert.equal(text.status, 200);
+  });
+  assert.deepEqual(calls, ['gpt-5.6-luna', 'deepseek-v4-flash']);
+  clearUnsupportedCache();
+});
+
 
 test('single provider breaker open still probes upstream instead of rejecting', async () => {
   const calls = [];
