@@ -608,3 +608,4 @@ config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热
 - **修复**（`src/health.js`）：调度周期 single-flight；每个探针使用可取消的 `createAbortScope`，stop 时 abort 所有 in-flight probes；非 SSE body 在判断健康后主动 cancel；退役信号下不再更新 unhealthy 集合或触发状态回调；Responses SSE 读取也响应 abort；无显式模型列表时同时扫描单 endpoint 和 endpoint 数组。
 - **验证**：新增单 endpoint 覆盖、非流 body 释放、慢周期不重叠、stop abort/忽略 retired result 四个回归；health 定向 9/9、全套 **251/251**、smoke、双向四跳 mock、`node --check` 与 `git diff --check` 均通过。
 - **缓存约束**：健康探针仍只发送固定最小 probe，不注入会话/时间/随机字段；本阶段未改变 DeepSeek 模型可见前缀、usage hit/miss、Provider 粘性或协议转换顺序。
+- **部署坑**：commit `e525b5e`、`552953c` 已推送，但本次 `sudo Restart-Service CodexRouter` 在 Windows 强制新窗口/UAC 模式下挂起；`sudo --inline` 明确被系统策略拒绝。当前服务 PID `49600` 仍是旧代次，端口健康但尚未加载本阶段源码。下一次需用户在可见的管理员 PowerShell 执行 `Restart-Service CodexRouter -Force`，再核对 `/api/status` 与进程启动时间。
