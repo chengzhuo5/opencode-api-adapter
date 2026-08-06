@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import http from 'node:http';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -237,6 +238,111 @@ test('malformed JSON and missing model return 400', async () => {
       body: JSON.stringify({ input: [] })
     });
     assert.equal(missing.status, 400);
+  });
+});
+
+test('request body limit returns 413 before calling upstream', async () => {
+  let upstreamCalls = 0;
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    limits: { maxRequestBodyBytes: 128, requestBodyIdleMs: 1_000 }
+  }, async () => {
+    upstreamCalls += 1;
+    return new Response('{}', { status: 200 });
+  }, async (base) => {
+    const res = await fetch(`${base}/v1/responses`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-v4-flash',
+        input: [{ type: 'message', role: 'user', content: 'x'.repeat(512) }]
+      })
+    });
+    assert.equal(res.status, 413);
+    assert.match((await res.json()).error.message, /request body exceeds 128 bytes/i);
+  });
+  assert.equal(upstreamCalls, 0);
+});
+
+test('chunked request body limit is enforced while streaming', async () => {
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    limits: { maxRequestBodyBytes: 64, requestBodyIdleMs: 1_000 }
+  }, async () => new Response('{}', { status: 200 }), async (base) => {
+    const url = new URL('/v1/responses', base);
+    const result = await new Promise((resolve, reject) => {
+      const request = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'transfer-encoding': 'chunked'
+        }
+      }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => resolve({
+          status: response.statusCode,
+          body: Buffer.concat(chunks).toString('utf8')
+        }));
+      });
+      request.on('error', reject);
+      request.write('{"model":"deepseek-v4-flash",');
+      request.write('"input":"');
+      request.write('x'.repeat(128));
+      request.end('"}');
+    });
+    assert.equal(result.status, 413);
+    assert.match(JSON.parse(result.body).error.message, /request body exceeds 64 bytes/i);
+  });
+});
+
+test('stalled request body returns 408 after the configured idle timeout', async () => {
+  await withServer({
+    apiKey: 'k',
+    apiBaseUrl: 'https://x/v1',
+    models: {},
+    limits: { maxRequestBodyBytes: 1024, requestBodyIdleMs: 30 }
+  }, async () => new Response('{}', { status: 200 }), async (base) => {
+    const url = new URL('/v1/responses', base);
+    const result = await new Promise((resolve, reject) => {
+      let guard;
+      const request = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'transfer-encoding': 'chunked'
+        }
+      }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          clearTimeout(guard);
+          resolve({
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString('utf8')
+          });
+        });
+      });
+      request.on('error', reject);
+      request.write('{"model":"deepseek-v4-flash","input":[');
+      guard = setTimeout(() => {
+        request.destroy();
+        reject(new Error('timed out waiting for router 408 response'));
+      }, 500);
+      guard.unref?.();
+    });
+    assert.equal(result.status, 408);
+    assert.match(JSON.parse(result.body).error.message, /idle timeout/i);
   });
 });
 

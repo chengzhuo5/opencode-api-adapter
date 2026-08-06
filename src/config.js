@@ -9,6 +9,10 @@ export const DEFAULT_CONFIG = {
   apiKeyEnv: 'OPENCODE_GO_API_KEY',
   catalogFile: 'catalog.json',
   timeouts: { requestMs: 600000, streamIdleMs: 180000 },
+  limits: {
+    maxRequestBodyBytes: 67108864,
+    requestBodyIdleMs: 120000
+  },
   models: {},
   nonStreamingUpstream: false,
   healthCheck: {
@@ -65,6 +69,7 @@ export function loadConfig({ configPath = 'config.json', env = process.env, cwd 
     ...DEFAULT_CONFIG,
     ...raw,
     timeouts: { ...DEFAULT_CONFIG.timeouts, ...(raw.timeouts || {}) },
+    limits: { ...DEFAULT_CONFIG.limits, ...(raw.limits || {}) },
     models: raw.models || {},
     modelPatterns: raw.modelPatterns || {},
     compress: { ...DEFAULT_CONFIG.compress, ...(raw.compress || {}) },

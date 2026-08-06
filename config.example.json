@@ -8,6 +8,10 @@
     "requestMs": 600000,
     "streamIdleMs": 180000
   },
+  "limits": {
+    "maxRequestBodyBytes": 67108864,
+    "requestBodyIdleMs": 120000
+  },
   "models": {
     "deepseek-v4-flash": {
       "upstream": "responses",

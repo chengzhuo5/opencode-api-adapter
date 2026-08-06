@@ -126,7 +126,7 @@ export function createRouter(config, {
         return;
       }
       if (req.method === 'POST' && url.pathname === '/api/reload') {
-        const text = await readRawBody(req);
+        const text = await readRawBody(req, config);
         const error = onReloadValidate ? onReloadValidate(text) : 'reload not configured';
         if (error) {
           sendJson(res, 400, { ok: false, error });
@@ -178,7 +178,7 @@ export function createRouter(config, {
         }
         try {
           let body = {};
-          try { body = await readJson(req); } catch { body = {}; }
+          try { body = await readJson(req, config); } catch { body = {}; }
           const result = codex.restore({ file: body?.file, confirm: Boolean(body?.confirm) });
           logEvent(config, { event: 'codex_restore', restored: result.restored, method: result.method || null });
           sendJson(res, 200, result);
@@ -188,7 +188,7 @@ export function createRouter(config, {
         return;
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
-        const body = await readJson(req);
+        const body = await readJson(req, config);
         validateResponsesRequest(body);
         const route = resolveRoute(config, maybeUpgradeModel(body).model);
         if (health) reorderProvidersByHealth(route, health);
@@ -232,7 +232,10 @@ export function createRouter(config, {
         try { res.end(); } catch { /* noop */ }
         return;
       }
-      if (error instanceof RequestValidationError || error instanceof UnknownModelError) {
+      if (error instanceof RequestValidationError) {
+        if (error.closeConnection) res.setHeader('connection', 'close');
+        sendJson(res, error.statusCode, { error: { message: error.message } });
+      } else if (error instanceof UnknownModelError) {
         sendJson(res, 400, { error: { message: error.message } });
       } else if (error instanceof RouteConfigurationError) {
         sendJson(res, error.statusCode || 503, { error: { message: error.message } });
@@ -361,10 +364,8 @@ async function forward(res, body, route, config, fetchImpl, compression) {
   });
 }
 
-async function readJson(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const text = Buffer.concat(chunks).toString('utf8');
+async function readJson(req, config) {
+  const text = await readBody(req, config);
   try {
     return JSON.parse(text);
   } catch {
@@ -372,16 +373,66 @@ async function readJson(req) {
   }
 }
 
-async function readRawBody(req) {
+async function readRawBody(req, config) {
+  return readBody(req, config);
+}
+
+async function readBody(req, config) {
+  const maxBytes = Number.isFinite(config?.limits?.maxRequestBodyBytes)
+    && config.limits.maxRequestBodyBytes > 0
+    ? config.limits.maxRequestBodyBytes
+    : 64 * 1024 * 1024;
+  const idleMs = Number.isFinite(config?.limits?.requestBodyIdleMs)
+    && config.limits.requestBodyIdleMs > 0
+    ? config.limits.requestBodyIdleMs
+    : 120_000;
+  const declaredLength = Number(req.headers['content-length']);
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    throw new RequestValidationError(
+      `request body exceeds ${maxBytes} bytes`,
+      413,
+      { closeConnection: true }
+    );
+  }
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  return Buffer.concat(chunks).toString('utf8');
+  let total = 0;
+  const iterator = req[Symbol.asyncIterator]();
+  while (true) {
+    let timer = null;
+    const next = await Promise.race([
+      iterator.next(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new RequestValidationError(
+          `request body idle timeout after ${idleMs} ms`,
+          408,
+          { closeConnection: true }
+        )), idleMs);
+        timer.unref?.();
+      })
+    ]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    if (next.done) break;
+    const chunk = Buffer.isBuffer(next.value) ? next.value : Buffer.from(next.value);
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw new RequestValidationError(
+        `request body exceeds ${maxBytes} bytes`,
+        413,
+        { closeConnection: true }
+      );
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
 }
 
 class RequestValidationError extends Error {
-  constructor(message) {
+  constructor(message, statusCode = 400, { closeConnection = false } = {}) {
     super(message);
     this.name = 'RequestValidationError';
+    this.statusCode = statusCode;
+    this.closeConnection = closeConnection;
   }
 }
 

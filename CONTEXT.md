@@ -51,3 +51,7 @@ _Avoid_: regenerated summary, transient compression
 **Usage Store**:
 The in-memory request-usage snapshot with versioned aggregate caching and asynchronous batched JSONL persistence.
 _Avoid_: per-poll file scan, synchronous request logging
+
+**Request Ingress**:
+The bounded HTTP body reader that enforces declared and streamed byte limits plus per-chunk idle deadlines before Request Preparation.
+_Avoid_: unbounded buffering, socket-global timeout

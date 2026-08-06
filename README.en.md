@@ -69,9 +69,15 @@ Minimal configuration:
     "requestMs": 600000,
     "streamIdleMs": 180000
   },
+  "limits": {
+    "maxRequestBodyBytes": 67108864,
+    "requestBodyIdleMs": 120000
+  },
   "models": {}
 }
 ```
+
+`limits.maxRequestBodyBytes` checks both declared `Content-Length` and actual chunked bytes, returning 413 when exceeded. `requestBodyIdleMs` is the maximum idle gap between incoming body chunks and returns 408 on timeout. Defaults are 64 MiB / 120 seconds; normal long-context and image requests are not rewritten or given extra model-visible fields.
 
 ### Custom providers (per-model endpoints and wildcards)
 

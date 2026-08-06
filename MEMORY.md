@@ -222,6 +222,22 @@ conversation/prefix/tool/provider 四类 HMAC 指纹齐全、`ok:true / error:nu
 `/v1/usage` 在下一次查询立即从 2,775 增到 2,776；JSONL 文件由 751,399 增到
 752,220 bytes，异步持久化成功。
 
+## 2026-08-06：Request Ingress 有界化
+
+**根因**：`readJson` / `readRawBody` 过去把所有 chunk 无上限放进数组再
+`Buffer.concat`，也没有入站 idle deadline。伪造超大 `Content-Length`、持续 chunked
+灌入或写半截后长期停顿，都能在进入路由前无界占用内存/连接。
+
+**修复**：
+
+1. 新增 `limits.maxRequestBodyBytes`（默认 64 MiB）与 `requestBodyIdleMs`（默认 120s）。
+2. `Content-Length` 超限在读取前立即 413；无长度 chunked 请求逐块累计字节，跨块超限
+   同样 413；每次 `iterator.next()` 使用独立 idle timer，停顿超时返回 408 并关闭连接。
+3. JSON 语法/字段错误继续 400，模型/Provider 配置错误保持原分类；读取结果本身不改写，
+   不影响 DeepSeek 模型可见前缀。
+4. 新增 declared length、chunked overflow、stalled body 三个真实 HTTP 回归。最终全套
+   220/220、smoke 200/200、`npm pack --dry-run`、语法检查与 `git diff --check` 均通过。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。

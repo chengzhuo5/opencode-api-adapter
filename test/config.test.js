@@ -17,6 +17,8 @@ test('loads config and api key from env', () => {
   const cfg = loadConfig({ configPath: file, env: { OPENCODE_GO_API_KEY: 'k' } });
   assert.equal(cfg.port, 12345);
   assert.equal(cfg.apiKey, 'k');
+  assert.equal(cfg.limits.maxRequestBodyBytes, 67108864);
+  assert.equal(cfg.limits.requestBodyIdleMs, 120000);
   rmSync(dir, { recursive: true, force: true });
 });
 
