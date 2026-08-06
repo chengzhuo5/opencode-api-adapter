@@ -356,6 +356,15 @@ tools 顺序、usage 提取或压缩 checkpoint。DeepSeek hit/miss、确定性�
 同端点多凭据 affinity/health/breaker、catalog 可路由性均有回归；全套 241/241，
 smoke 200/200，双向四跳 mock、pack dry-run、语法检查与 `git diff --check` 均通过。
 
+**部署验证**：commit `211bdf1` 已推送并重启 `CodexRouter`，Node PID
+`61096 → 18820`；`/healthz` 与 `/api/status` 正常，压缩和 circuit breaker 继续保持
+关闭。线上 catalog 从全部内置默认模型收敛为 7 个真实可路由模型（6 个 GPT +
+`deepseek-v4-flash`）。真实 DeepSeek 非流请求 200（合法 `response.incomplete`），
+上游 Responses usage 的 `input_tokens_details.cached_tokens=0` 被 schema v2 日志正确
+归一为 `cache_hit_tokens=0 / cache_miss_tokens=90`，四类 HMAC 指纹齐全且
+`ok:true / error:null`。用当前 config 调 `/api/reload` 后 PID 不变、服务健康、
+config/catalog SHA-256 不变，管理页加载到“配置已校验并开始热加载”新版文案。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。
