@@ -238,6 +238,12 @@ conversation/prefix/tool/provider 四类 HMAC 指纹齐全、`ok:true / error:nu
 4. 新增 declared length、chunked overflow、stalled body 三个真实 HTTP 回归。最终全套
    220/220、smoke 200/200、`npm pack --dry-run`、语法检查与 `git diff --check` 均通过。
 
+**部署验证**：commit `71a0a92` 已推送并重启 `CodexRouter`，Node PID
+`22648 → 40936`；`/healthz` 200，`compress.enabled=false` 与 circuit breaker 默认关闭
+均保持。真实 DeepSeek 非流式请求 200 completed；原始 TCP 只声明
+`Content-Length: 67108865`、不发送 body，8.4 ms 即收到 413 且 `Connection: close`，
+证明默认 64 MiB 快速拒绝路径在线生效。
+
 ## 2026-08-04：deepseek reasoning_content 偶发报错
 
 **现象**：`Error from provider (Console Go): Upstream request failed: [invalid_request_error] The reasoning_content in the thinking mode must be passed back to the API.` 偶发出现，重试即恢复。
